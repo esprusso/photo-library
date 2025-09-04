@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: photo-library-db
+    environment:
+      POSTGRES_DB: photo_library
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: PhotoLib2024!
+      TZ: "Etc/UTC"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - photo-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: photo-library-backend:latest
+    container_name: photo-library-backend
+    ports:
+      - "8102:8000"
+    environment:
+      LIBRARY_PATHS: /library
+      DB_URL: postgresql://postgres:PhotoLib2024!@db:5432/photo_library
+      PYTHONUNBUFFERED: 1
+      TZ: "Etc/UTC"
+      THUMBNAILS_DIR: /data/thumbnails
+      DOWNLOADS_DIR: /data/downloads
+      MEDIA_DIR: /data/media
+      ENABLE_FFMPEG_FALLBACK: "true"
+    volumes:
+      - "/volume1/Heritage/Photos:/library:ro"
+      - "/volume1/docker/apps/photo-image-library/data:/data"
+      # Bind host ffmpeg binary into the container for fallback decoding
+      - "/bin/ffmpeg:/usr/local/bin/ffmpeg:ro"
+    networks:
+      - photo-network
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: photo-library-frontend:latest
+    container_name: photo-library-frontend
+    ports:
+      - "8081:80"
+    environment:
+      TZ: "Etc/UTC"
+    networks:
+      - photo-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db_data:
+
+networks:
+  photo-network:
+    driver: bridge
