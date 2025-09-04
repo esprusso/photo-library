@@ -197,3 +197,38 @@ async def _placeholder_tagging_job(job_id: int):
             session.commit()
     finally:
         session.close()
+
+@router.post("/force-kill-stalled")
+async def force_kill_stalled_jobs(db: Session = Depends(get_db)):
+    """Force-kill all running jobs that have been stalled (no progress in last 5 minutes)"""
+    from datetime import datetime, timedelta
+    
+    # Find jobs that are "running" but haven't been updated recently
+    five_minutes_ago = datetime.now() - timedelta(minutes=5)
+    
+    stalled_jobs = db.query(Job).filter(
+        Job.status == "running",
+        Job.started_at < five_minutes_ago  # Started more than 5 minutes ago
+    ).all()
+    
+    if not stalled_jobs:
+        return {"message": "No stalled jobs found"}
+    
+    killed_jobs = []
+    for job in stalled_jobs:
+        # Force mark as failed with a clear message
+        job.status = "failed"
+        job.error_message = "Job was killed due to being stalled/unresponsive"
+        job.completed_at = datetime.now()
+        killed_jobs.append({
+            "id": job.id,
+            "type": job.type,
+            "progress": f"{job.processed_items or 0}/{job.total_items or 0}"
+        })
+    
+    db.commit()
+    
+    return {
+        "message": f"Force-killed {len(killed_jobs)} stalled jobs",
+        "killed_jobs": killed_jobs
+    }

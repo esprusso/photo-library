@@ -37,6 +37,12 @@ services:
       DOWNLOADS_DIR: /data/downloads
       MEDIA_DIR: /data/media
       ENABLE_FFMPEG_FALLBACK: "true"
+      # Performance optimizations
+      THUMBNAIL_SIZE: 200
+      MAX_WORKERS: 2
+      THUMBNAIL_BATCH_SIZE: 10
+      # Set to 'true' to exclude RAW files (ARW, RAF, CR2, etc.) for better performance
+      EXCLUDE_RAW_FILES: 'true'
     volumes:
       - "/volume1/Heritage/Photos:/library:ro"
       - "/volume1/docker/apps/photo-image-library/data:/data"

@@ -19,7 +19,18 @@ class ImageScanner:
         self.metadata_extractor = MetadataExtractor()
         self.thumbnail_generator = ThumbnailGenerator()
         self.media_manager = MediaManager()
-        self.supported_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.tif', '.bmp', '.cr2', '.nef', '.arw', '.dng', '.orf', '.raf', '.rw2'}
+        
+        # Check if RAW files should be excluded
+        exclude_raw = os.getenv('EXCLUDE_RAW_FILES', 'false').lower() == 'true'
+        raw_extensions = {'.cr2', '.nef', '.arw', '.dng', '.orf', '.raf', '.rw2'}
+        base_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.tif', '.bmp'}
+        
+        if exclude_raw:
+            self.supported_extensions = base_extensions
+            print("RAW files excluded from scanning")
+        else:
+            self.supported_extensions = base_extensions | raw_extensions
+            print("RAW files included in scanning")
     
     def scan_library(self, db: Session, job_id: Optional[int] = None):
         """Scan all configured library paths for images"""
@@ -247,8 +258,17 @@ class ImageScanner:
                 # Clean up folder name for category
                 category_name = part.replace('_', ' ').replace('-', ' ').title()
                 # Remove numbers and special chars if they're just organizational
-                # Keep meaningful names, remove pure numbers or dates
-                if not re.match(r'^\d+$', category_name) and not re.match(r'^\d{4}-\d{2}-\d{2}$', category_name):
+                # Keep meaningful names, remove:
+                # - Pure numbers: "123", "001"
+                # - Dates: "2023-01-01"
+                # - Hex-like strings: "000D", "00C9", "DCIM" style camera folders
+                # - Very short meaningless names: single chars, etc.
+                if (not re.match(r'^\d+$', category_name) and 
+                    not re.match(r'^\d{4}-\d{2}-\d{2}$', category_name) and
+                    not re.match(r'^[0-9A-F]{2,6}$', category_name.replace(' ', '').upper()) and
+                    not re.match(r'^[0-9]+[A-F]+[0-9]*$', category_name.replace(' ', '').upper()) and
+                    len(category_name.replace(' ', '')) > 2 and
+                    category_name.replace(' ', '').upper() not in ['DCIM', 'IMG', 'DSC', 'PIC', 'PHOTO', 'PHOTOS']):
                     categories.append(category_name)
         
         return categories

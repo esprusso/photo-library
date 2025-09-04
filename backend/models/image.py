@@ -86,5 +86,14 @@ class Image(Base):
             "indexed_at": self.indexed_at.isoformat() if self.indexed_at else None,
             "thumbnail_path": self.thumbnail_path,
             "tags": [tag.name for tag in self.tags],
-            "categories": [cat.name for cat in self.categories]
+            "categories": [cat.name for cat in self.categories],
+            # AI-specific fields (for backwards compatibility with original AI image app)
+            "prompt": getattr(self, 'prompt', None),
+            "negative_prompt": getattr(self, 'negative_prompt', None),
+            "model_name": getattr(self, 'model_name', None),
+            "model_hash": getattr(self, 'model_hash', None),
+            "seed": getattr(self, 'seed', None),
+            "steps": getattr(self, 'steps', None),
+            "cfg_scale": getattr(self, 'cfg_scale', None),
+            "sampler": getattr(self, 'sampler', None)
         }

@@ -133,44 +133,63 @@ async def create_media_copies(background_tasks: BackgroundTasks, db: Session = D
 
 def _get_image_serving_path(image: Image) -> Optional[str]:
     """Get the best path to serve an image (prefer local copy, fallback to original)"""
-    print(f"DEBUG: Resolving path for image {image.id}")
-    print(f"DEBUG: Original path: {image.path}")
+    print(f"DEBUG: ============ Resolving path for image {image.id} ============")
+    print(f"DEBUG: Original stored path: {image.path}")
     print(f"DEBUG: Local path: {image.local_path}")
     
     # First try local media copy
     if image.local_path and os.path.exists(image.local_path):
-        print(f"DEBUG: Using local path: {image.local_path}")
+        print(f"DEBUG: ✅ Using local media copy: {image.local_path}")
         return image.local_path
     
     # Fallback to original path with volume mapping
     if not image.path:
-        print(f"DEBUG: No path available for image {image.id}")
+        print(f"DEBUG: ❌ No path available for image {image.id}")
         return None
     
-    # If file exists at original path, use it
+    # Check if original path exists as-is (shouldn't in container, but let's check)
+    print(f"DEBUG: Checking if original path exists: {image.path}")
     if os.path.exists(image.path):
-        print(f"DEBUG: Using original path: {image.path}")
+        print(f"DEBUG: ✅ Using original path (unexpected in container): {image.path}")
         return image.path
+    else:
+        print(f"DEBUG: ❌ Original path does not exist: {image.path}")
     
     # Check if path needs mapping from host to container
     if image.path.startswith('/volume1/Heritage/AI Art'):
         container_path = image.path.replace('/volume1/Heritage/AI Art', '/library')
-        print(f"DEBUG: Trying mapped path: {container_path}")
+        print(f"DEBUG: Trying AI Art mapped path: {container_path}")
         if os.path.exists(container_path):
-            print(f"DEBUG: Using mapped path: {container_path}")
+            print(f"DEBUG: ✅ Using AI Art mapped path: {container_path}")
             return container_path
+        else:
+            print(f"DEBUG: ❌ AI Art mapped path does not exist: {container_path}")
+    elif image.path.startswith('/volume1/Heritage/Photos'):
+        container_path = image.path.replace('/volume1/Heritage/Photos', '/library')
+        print(f"DEBUG: Trying Heritage Photos mapped path: {container_path}")
+        if os.path.exists(container_path):
+            print(f"DEBUG: ✅ Using Heritage Photos mapped path: {container_path}")
+            return container_path
+        else:
+            print(f"DEBUG: ❌ Heritage Photos mapped path does not exist: {container_path}")
     
     # Check if path is already using container mount point but doesn't exist
-    # (This can happen if the mount failed or path changed)
     if image.path.startswith('/library'):
-        print(f"DEBUG: Checking library path: {image.path}")
+        print(f"DEBUG: Checking container library path: {image.path}")
         if os.path.exists(image.path):
-            print(f"DEBUG: Using library path: {image.path}")
+            print(f"DEBUG: ✅ Using existing library path: {image.path}")
             return image.path
         else:
-            print(f"DEBUG: Library path does not exist: {image.path}")
+            print(f"DEBUG: ❌ Library path does not exist: {image.path}")
     
-    print(f"DEBUG: No valid path found for image {image.id}")
+    # List what's actually in /library to debug
+    try:
+        library_contents = os.listdir('/library')[:10]  # First 10 items
+        print(f"DEBUG: Contents of /library: {library_contents}")
+    except Exception as e:
+        print(f"DEBUG: Error listing /library: {e}")
+    
+    print(f"DEBUG: ❌ No valid path found for image {image.id}")
     return None
 
 def _get_media_type(filename: str) -> str:

@@ -12,6 +12,7 @@ class CategoryResponse(BaseModel):
     name: str
     description: Optional[str]
     color: str
+    featured: bool
     created_at: Optional[str]
     image_count: int
 
@@ -19,11 +20,13 @@ class CategoryCreate(BaseModel):
     name: str
     description: Optional[str] = None
     color: Optional[str] = "#10B981"
+    # featured: Optional[bool] = False  # Temporarily disabled
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     color: Optional[str] = None
+    # featured: Optional[bool] = None  # Temporarily disabled
 
 @router.get("/", response_model=List[CategoryResponse])
 async def get_categories(
@@ -32,20 +35,42 @@ async def get_categories(
     db: Session = Depends(get_db)
 ):
     """Get all categories with optional search"""
-    query = db.query(Category)
+    from sqlalchemy import func
+    
+    # Always get categories with image counts in a single efficient query
+    query = db.query(
+        Category.id,
+        Category.name, 
+        Category.description,
+        Category.color,
+        Category.created_at,
+        func.count(Image.id).label('image_count')
+    ).outerjoin(Category.images).group_by(Category.id, Category.name, Category.description, Category.color, Category.created_at)
     
     if search:
         query = query.filter(Category.name.ilike(f"%{search}%"))
     
     if sort_by == "count":
-        # Sort by image count using LEFT JOIN to include categories with 0 images
-        from sqlalchemy import func
-        query = query.outerjoin(Category.images).group_by(Category.id).order_by(func.count(Image.id).desc())
+        query = query.order_by(func.count(Image.id).desc())
     else:
         query = query.order_by(Category.name)
     
-    categories = query.all()
-    return [CategoryResponse(**category.to_dict()) for category in categories]
+    results = query.all()
+    
+    # Convert results to CategoryResponse format
+    categories = []
+    for result in results:
+        categories.append(CategoryResponse(
+            id=result.id,
+            name=result.name,
+            description=result.description,
+            color=result.color,
+            featured=getattr(result, 'featured', False),
+            created_at=result.created_at.isoformat() if result.created_at else None,
+            image_count=result.image_count
+        ))
+    
+    return categories
 
 @router.post("/", response_model=CategoryResponse)
 async def create_category(category_data: CategoryCreate, db: Session = Depends(get_db)):
@@ -58,6 +83,7 @@ async def create_category(category_data: CategoryCreate, db: Session = Depends(g
         name=category_data.name,
         description=category_data.description,
         color=category_data.color
+        # featured=category_data.featured  # Temporarily disabled
     )
     db.add(category)
     db.commit()
@@ -95,6 +121,9 @@ async def update_category(category_id: int, category_data: CategoryUpdate, db: S
     
     if category_data.color:
         category.color = category_data.color
+    
+    # if category_data.featured is not None:
+    #     category.featured = category_data.featured  # Temporarily disabled
     
     db.commit()
     db.refresh(category)
@@ -207,3 +236,90 @@ async def auto_categorize_by_folders(
     background_tasks.add_task(categorize_all_images)
     
     return {"message": "Started auto-categorization based on folder structure. This will run in the background."}
+
+@router.post("/cleanup-empty")
+async def cleanup_empty_categories(
+    min_images: int = 1,
+    db: Session = Depends(get_db)
+):
+    """Remove categories with fewer than min_images (default: 1)"""
+    from sqlalchemy import func
+    
+    # Get categories with their image counts
+    categories_with_counts = db.query(
+        Category.id,
+        Category.name,
+        func.count(Image.id).label('image_count')
+    ).outerjoin(Category.images).group_by(Category.id, Category.name).all()
+    
+    # Find categories with fewer than min_images
+    empty_categories = [
+        cat for cat in categories_with_counts 
+        if cat.image_count < min_images
+    ]
+    
+    if not empty_categories:
+        return {"message": f"No categories found with fewer than {min_images} images"}
+    
+    # Delete empty categories
+    empty_category_ids = [cat.id for cat in empty_categories]
+    empty_category_names = [cat.name for cat in empty_categories[:5]]  # Show first 5 names
+    
+    deleted_categories = db.query(Category).filter(Category.id.in_(empty_category_ids)).all()
+    for category in deleted_categories:
+        db.delete(category)
+    
+    db.commit()
+    
+    total_deleted = len(empty_categories)
+    preview_names = ", ".join(empty_category_names)
+    if total_deleted > 5:
+        preview_names += f" and {total_deleted - 5} more"
+    
+    return {
+        "message": f"Deleted {total_deleted} categories with fewer than {min_images} images",
+        "deleted_categories": preview_names,
+        "deleted_count": total_deleted
+    }
+
+@router.post("/cleanup-raw-files")
+async def cleanup_raw_files(db: Session = Depends(get_db)):
+    """Remove all RAW files from the database (ARW, RAF, CR2, NEF, DNG, etc.)"""
+    
+    raw_extensions = ['.cr2', '.nef', '.arw', '.dng', '.orf', '.raf', '.rw2']
+    
+    # Find all images with RAW extensions
+    raw_images_query = db.query(Image).filter(
+        Image.filename.ilike(f'%.cr2') |
+        Image.filename.ilike(f'%.nef') |
+        Image.filename.ilike(f'%.arw') |
+        Image.filename.ilike(f'%.dng') |
+        Image.filename.ilike(f'%.orf') |
+        Image.filename.ilike(f'%.raf') |
+        Image.filename.ilike(f'%.rw2')
+    )
+    
+    raw_images = raw_images_query.all()
+    
+    if not raw_images:
+        return {"message": "No RAW files found in database"}
+    
+    # Get some info before deletion
+    raw_count = len(raw_images)
+    sample_filenames = [img.filename for img in raw_images[:5]]
+    
+    # Delete all RAW images
+    for image in raw_images:
+        db.delete(image)
+    
+    db.commit()
+    
+    preview_names = ", ".join(sample_filenames)
+    if raw_count > 5:
+        preview_names += f" and {raw_count - 5} more"
+    
+    return {
+        "message": f"Removed {raw_count} RAW files from library",
+        "removed_files": preview_names,
+        "removed_count": raw_count
+    }

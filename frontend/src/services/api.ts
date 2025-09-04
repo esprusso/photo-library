@@ -192,6 +192,18 @@ export const categoryApi = {
   autoCategorizeByFolders: async (): Promise<{ message: string }> => {
     const { data } = await api.post('/categories/auto-categorize-folders')
     return data
+  },
+
+  // Cleanup RAW files from database
+  cleanupRawFiles: async (): Promise<{ message: string; removed_files: string; removed_count: number }> => {
+    const { data } = await api.post('/categories/cleanup-raw-files')
+    return data
+  },
+
+  // Cleanup categories with few images
+  cleanupEmptyCategories: async (minImages: number = 1): Promise<{ message: string; deleted_categories: string; deleted_count: number }> => {
+    const { data } = await api.post(`/categories/cleanup-empty?min_images=${minImages}`)
+    return data
   }
 }
 
@@ -233,6 +245,12 @@ export const jobApi = {
   // Cancel job
   cancelJob: async (id: number): Promise<{ message: string }> => {
     const { data } = await api.delete(`/jobs/${id}`)
+    return data
+  },
+
+  // Force-kill stalled jobs
+  forceKillStalled: async (): Promise<{ message: string; killed_jobs: any[] }> => {
+    const { data } = await api.post('/jobs/force-kill-stalled')
     return data
   }
 }

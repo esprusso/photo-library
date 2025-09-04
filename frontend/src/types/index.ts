@@ -39,6 +39,7 @@ export interface Category {
   name: string
   description?: string
   color: string
+  featured: boolean  // Always false until database migration
   created_at?: string
   image_count: number
 }

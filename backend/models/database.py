@@ -3,7 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-DATABASE_URL = os.getenv("DB_URL", "sqlite:////cache/app.db")
+DATABASE_URL = os.getenv("DB_URL", "sqlite:///./app.db")
 
 if DATABASE_URL.startswith("sqlite"):
     # Ensure SQLite directory exists (e.g., /cache)

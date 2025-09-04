@@ -113,7 +113,7 @@ def get_images(page_size: int = 12, db: Session = Depends(get_db)):
 @app.post('/scan')
 def scan_library(db: Session = Depends(get_db)):
     try:
-        library_path = '/library'
+        library_path = os.getenv('LIBRARY_PATHS', '/library')
         if not os.path.exists(library_path):
             return {'error': f'Library path {library_path} does not exist'}
         

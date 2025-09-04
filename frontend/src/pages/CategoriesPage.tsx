@@ -13,6 +13,7 @@ export default function CategoriesPage() {
   const [sortBy, setSortBy] = useState<'name' | 'image_count'>('name')
   const [selectedCategories, setSelectedCategories] = useState<Set<number>>(new Set())
   const [bulkMode, setBulkMode] = useState(false)
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null)
   
   const { data: categories, isLoading } = useQuery(
     ['categories', sortBy], 
@@ -82,6 +83,26 @@ export default function CategoriesPage() {
         setEditingCategory(null)
         qc.invalidateQueries('categories')
       },
+      onError: (error: any) => {
+        console.error('Category update failed:', error)
+        console.error('Error details:', JSON.stringify(error, null, 2))
+        
+        let errorMessage = 'Unknown error'
+        
+        if (error?.response?.data?.detail) {
+          errorMessage = error.response.data.detail
+        } else if (error?.response?.data?.message) {
+          errorMessage = error.response.data.message
+        } else if (error?.message) {
+          errorMessage = error.message
+        } else if (typeof error === 'string') {
+          errorMessage = error
+        } else {
+          errorMessage = `Network or server error: ${error?.response?.status || 'Unknown'}`
+        }
+        
+        alert(`Failed to update category: ${errorMessage}`)
+      }
     }
   )
 
@@ -97,6 +118,15 @@ export default function CategoriesPage() {
 
   const handleSaveEdit = () => {
     if (!editingCategory) return
+    
+    console.log('Saving category edit:', {
+      id: editingCategory.id,
+      updates: {
+        name: editingCategory.name,
+        description: editingCategory.description,
+        color: editingCategory.color
+      }
+    })
     
     updateMutation.mutate({
       id: editingCategory.id,
@@ -114,16 +144,36 @@ export default function CategoriesPage() {
     }
   }
 
-  const toggleCategorySelection = (categoryId: number) => {
-    setSelectedCategories(prev => {
-      const newSet = new Set(prev)
-      if (newSet.has(categoryId)) {
-        newSet.delete(categoryId)
-      } else {
-        newSet.add(categoryId)
-      }
-      return newSet
-    })
+  const toggleCategorySelection = (categoryId: number, event?: React.MouseEvent) => {
+    if (!categories) return
+
+    const categoryIndex = categories.findIndex(c => c.id === categoryId)
+    
+    if (event?.shiftKey && lastSelectedIndex !== null) {
+      // Range selection: select all items between last clicked and current
+      const startIndex = Math.min(lastSelectedIndex, categoryIndex)
+      const endIndex = Math.max(lastSelectedIndex, categoryIndex)
+      
+      setSelectedCategories(prev => {
+        const newSet = new Set(prev)
+        for (let i = startIndex; i <= endIndex; i++) {
+          newSet.add(categories[i].id)
+        }
+        return newSet
+      })
+    } else {
+      // Single selection: toggle the clicked item
+      setSelectedCategories(prev => {
+        const newSet = new Set(prev)
+        if (newSet.has(categoryId)) {
+          newSet.delete(categoryId)
+        } else {
+          newSet.add(categoryId)
+        }
+        return newSet
+      })
+      setLastSelectedIndex(categoryIndex)
+    }
   }
 
   const selectAllCategories = () => {
@@ -188,26 +238,31 @@ export default function CategoriesPage() {
       {/* Create New Category */}
       <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
         <h3 className="text-md font-medium text-gray-900 dark:text-white mb-3">Create New Category</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Category name"
-            className="px-3 py-2 rounded-md bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm text-gray-900 dark:text-white"
-          />
-          <input
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Description (optional)"
-            className="px-3 py-2 rounded-md bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm text-gray-900 dark:text-white"
-          />
-          <button
-            onClick={() => createMutation.mutate()}
-            className="px-4 py-2 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-60"
-            disabled={!name || createMutation.isLoading}
-          >
-            {createMutation.isLoading ? 'Creating...' : 'Create Category'}
-          </button>
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Category name"
+              className="px-3 py-2 rounded-md bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm text-gray-900 dark:text-white"
+            />
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Description (optional)"
+              className="px-3 py-2 rounded-md bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm text-gray-900 dark:text-white"
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div></div>
+            <button
+              onClick={() => createMutation.mutate()}
+              className="px-4 py-2 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-60"
+              disabled={!name || createMutation.isLoading}
+            >
+              {createMutation.isLoading ? 'Creating...' : 'Create Category'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -283,17 +338,67 @@ export default function CategoriesPage() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {categories.map((category) => (
-            <div
-              key={category.id}
-              className={`bg-white dark:bg-gray-800 rounded-lg border p-4 transition-all ${
-                bulkMode ? 'cursor-pointer hover:shadow-lg' : 'hover:shadow-md'
-              } ${
-                bulkMode && selectedCategories.has(category.id)
-                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 shadow-md'
-                  : 'border-gray-200 dark:border-gray-700'
-              }`}
-              onClick={bulkMode ? () => toggleCategorySelection(category.id) : undefined}
-            >
+                  <CategoryCard 
+                    key={category.id} 
+                    category={category} 
+                    bulkMode={bulkMode}
+                    selectedCategories={selectedCategories}
+                    editingCategory={editingCategory}
+                    onToggleSelection={toggleCategorySelection}
+                    onEdit={handleEdit}
+                    onDelete={handleDelete}
+                    onSaveEdit={handleSaveEdit}
+                    onCancelEdit={() => setEditingCategory(null)}
+                    setEditingCategory={setEditingCategory}
+                    updateMutation={updateMutation}
+                    isFeatured={false}
+                  />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// CategoryCard Component
+function CategoryCard({
+  category,
+  bulkMode,
+  selectedCategories,
+  editingCategory,
+  onToggleSelection,
+  onEdit,
+  onDelete,
+  onSaveEdit,
+  onCancelEdit,
+  setEditingCategory,
+  updateMutation,
+  isFeatured
+}: {
+  category: Category
+  bulkMode: boolean
+  selectedCategories: Set<number>
+  editingCategory: Category | null
+  onToggleSelection: (categoryId: number, event?: React.MouseEvent) => void
+  onEdit: (category: Category) => void
+  onDelete: (id: number, name: string) => void
+  onSaveEdit: () => void
+  onCancelEdit: () => void
+  setEditingCategory: (category: Category) => void
+  updateMutation: any
+  isFeatured: boolean
+}) {
+  return (
+    <div
+      className={`bg-white dark:bg-gray-800 rounded-lg border p-4 transition-all ${
+        bulkMode ? 'cursor-pointer hover:shadow-lg' : 'hover:shadow-md'
+      } ${
+        bulkMode && selectedCategories.has(category.id)
+          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 shadow-md'
+          : 'border-gray-200 dark:border-gray-700'
+      }`}
+      onClick={bulkMode ? (e) => onToggleSelection(category.id, e) : undefined}
+    >
               {editingCategory?.id === category.id ? (
                 // Edit Mode
                 <div className="space-y-3">
@@ -309,16 +414,25 @@ export default function CategoriesPage() {
                     rows={2}
                     className="w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm resize-none"
                   />
+                  <div className="flex items-center space-x-2">
+                    <label className="text-sm text-gray-700 dark:text-gray-300">Color:</label>
+                    <input
+                      type="color"
+                      value={editingCategory.color}
+                      onChange={(e) => setEditingCategory({...editingCategory, color: e.target.value})}
+                      className="w-8 h-8 rounded border border-gray-300 dark:border-gray-600"
+                    />
+                  </div>
                   <div className="flex space-x-2">
                     <button
-                      onClick={handleSaveEdit}
+                      onClick={onSaveEdit}
                       disabled={updateMutation.isLoading}
                       className="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-50"
                     >
                       Save
                     </button>
                     <button
-                      onClick={() => setEditingCategory(null)}
+                      onClick={onCancelEdit}
                       className="px-3 py-1 bg-gray-500 text-white text-xs rounded hover:bg-gray-600"
                     >
                       Cancel
@@ -336,7 +450,7 @@ export default function CategoriesPage() {
                           checked={selectedCategories.has(category.id)}
                           onChange={(e) => {
                             e.stopPropagation()
-                            toggleCategorySelection(category.id)
+                            onToggleSelection(category.id, e as any)
                           }}
                           onClick={(e) => e.stopPropagation()}
                           className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
@@ -352,7 +466,7 @@ export default function CategoriesPage() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
-                            handleEdit(category)
+                            onEdit(category)
                           }}
                           className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                           title="Edit category"
@@ -362,7 +476,7 @@ export default function CategoriesPage() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
-                            handleDelete(category.id, category.name)
+                            onDelete(category.id, category.name)
                           }}
                           className="p-1 text-red-400 hover:text-red-600"
                           title="Delete category"
@@ -408,10 +522,6 @@ export default function CategoriesPage() {
                   )}
                 </>
               )}
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
 }
