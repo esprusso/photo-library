@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Image Library</title>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        h1 { text-align: center; color: #333; }
+        .nav { text-align: center; margin: 20px 0; }
+        .nav button { margin: 0 10px; padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .nav button:hover { background: #0056b3; }
+        .nav button:disabled { background: #ccc; cursor: not-allowed; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; text-align: center; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .loading { background: #d1ecf1; color: #0c5460; }
+        .stats { display: flex; justify-content: space-around; margin: 20px 0; }
+        .stat-card { background: #007bff; color: white; padding: 15px; border-radius: 8px; text-align: center; min-width: 120px; }
+        .stat-number { font-size: 24px; font-weight: bold; }
+        .stat-label { font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class='container'>
+        <h1>AI Image Library</h1>
+        
+        <div class='nav'>
+            <button onclick='testConnection()'>Test Connection</button>
+            <button onclick='loadStats()'>Load Stats</button>
+            <button onclick='scanLibrary()' id='scan-btn'>Scan Library</button>
+            <button onclick='clearDatabase()' id='clear-btn' style='background: #dc3545;'>Clear Database</button>
+            <button onclick='loadImages()'>Browse Images</button>
+        </div>
+        
+        <div id='status'></div>
+        <div id='stats-container'></div>
+        <div id='content'></div>
+    </div>
+    
+    <script>
+        const BACKEND_URL = 'http://' + window.location.hostname + ':8000';
+        
+        function showStatus(message, type = 'loading') {
+            document.getElementById('status').innerHTML = '<div class="' + type + '">' + message + '</div>';
+        }
+        
+        async function testConnection() {
+            showStatus('Testing backend connection...', 'loading');
+            try {
+                const response = await fetch(BACKEND_URL + '/health');
+                const data = await response.json();
+                showStatus('Backend connected! Status: ' + data.status, 'success');
+            } catch (error) {
+                showStatus('Connection failed: ' + error.message, 'error');
+                console.error('Connection error:', error);
+            }
+        }
+        
+        async function loadStats() {
+            showStatus('Loading statistics...', 'loading');
+            try {
+                const response = await fetch(BACKEND_URL + '/stats');
+                const data = await response.json();
+                
+                if (data.error) {
+                    showStatus('Stats error: ' + data.error, 'error');
+                    return;
+                }
+                
+                document.getElementById('stats-container').innerHTML = 
+                    '<div class="stats">' +
+                    '<div class="stat-card"><div class="stat-number">' + data.total_images + '</div><div class="stat-label">Images</div></div>' +
+                    '<div class="stat-card"><div class="stat-number">' + data.total_tags + '</div><div class="stat-label">Tags</div></div>' +
+                    '<div class="stat-card"><div class="stat-number">' + data.total_categories + '</div><div class="stat-label">Categories</div></div>' +
+                    '<div class="stat-card"><div class="stat-number">' + data.favorites + '</div><div class="stat-label">Favorites</div></div>' +
+                    '</div>';
+                
+                showStatus('Statistics loaded', 'success');
+            } catch (error) {
+                showStatus('Failed to load stats: ' + error.message, 'error');
+            }
+        }
+        
+        async function scanLibrary() {
+            const btn = document.getElementById('scan-btn');
+            btn.disabled = true;
+            btn.textContent = 'Scanning...';
+            
+            showStatus('Scanning library...', 'loading');
+            
+            try {
+                const response = await fetch(BACKEND_URL + '/scan', {method: 'POST'});
+                const data = await response.json();
+                
+                if (data.error) {
+                    showStatus('Scan error: ' + data.error, 'error');
+                } else {
+                    showStatus(data.message, 'success');
+                }
+            } catch (error) {
+                showStatus('Scan failed: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Scan Library';
+            }
+        }
+        
+        async function loadImages() {
+            showStatus('Loading images...', 'loading');
+            try {
+                const response = await fetch(BACKEND_URL + '/images');
+                const data = await response.json();
+                
+                if (data.length === 0) {
+                    showStatus('No images found in database', 'error');
+                    return;
+                }
+                
+                showStatus('Loaded ' + data.length + ' images', 'success');
+                
+                const imagesHTML = data.map(img => 
+                    '<div style="border: 1px solid #ddd; padding: 10px; margin: 10px; border-radius: 4px;">' +
+                    '<strong>' + img.filename + '</strong><br>' +
+                    'Size: ' + (img.file_size ? Math.round(img.file_size/1024/1024*100)/100 + ' MB' : 'Unknown') + '<br>' +
+                    (img.prompt ? 'Prompt: ' + img.prompt.substring(0, 100) + '...' : 'No prompt') +
+                    '</div>'
+                ).join('');
+                
+                document.getElementById('content').innerHTML = '<h3>Images:</h3>' + imagesHTML;
+            } catch (error) {
+                showStatus('Failed to load images: ' + error.message, 'error');
+            }
+        }
+        
+        window.onload = function() {
+            setTimeout(testConnection, 1000);
+        };
+    </script>
+</body>
+</html>
