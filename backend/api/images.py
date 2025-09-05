@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_, desc, asc, func
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 import os
 import zipfile
 import tempfile
@@ -151,7 +151,7 @@ async def delete_image(
 @router.get("/", response_model=List[ImageResponse])
 async def get_images(
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(50, ge=1, le=100),
     sort_by: str = Query("created_at", pattern="^(created_at|filename|width|height)$"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     query: Optional[str] = Query(None),
@@ -182,11 +182,11 @@ async def get_images(
     
     if tags:
         tag_list = [t.strip() for t in tags.split(",")]
-        query_obj = query_obj.join(Image.tags).filter(Tag.name.in_(tag_list))
+        query_obj = query_obj.join(Image.tags).filter(Tag.name.in_(tag_list)).distinct()
     
     if categories:
         cat_list = [c.strip() for c in categories.split(",")]
-        query_obj = query_obj.join(Image.categories).filter(Category.name.in_(cat_list))
+        query_obj = query_obj.join(Image.categories).filter(Category.name.in_(cat_list)).distinct()
     
     if favorite is not None:
         query_obj = query_obj.filter(Image.favorite == favorite)
@@ -236,10 +236,8 @@ async def toggle_favorite(image_id: int, db: Session = Depends(get_db)):
     return {"id": image.id, "favorite": image.favorite}
 
 @router.post("/{image_id}/rating")
-async def set_rating(image_id: int, rating: int, db: Session = Depends(get_db)):
+async def set_rating(image_id: int, rating: int = Query(..., ge=0, le=5), db: Session = Depends(get_db)):
     """Set rating for an image (0-5 stars)"""
-    if rating < 0 or rating > 5:
-        raise HTTPException(status_code=400, detail="Rating must be between 0 and 5")
     
     image = db.query(Image).filter(Image.id == image_id).first()
     if not image:
@@ -250,10 +248,22 @@ async def set_rating(image_id: int, rating: int, db: Session = Depends(get_db)):
     
     return {"id": image.id, "rating": image.rating}
 
+class TagNames(BaseModel):
+    tag_names: List[str] = Field(..., min_items=1, max_items=20)
+    
+    @validator('tag_names')
+    def validate_tag_names(cls, v):
+        for tag in v:
+            if not tag.strip():
+                raise ValueError('Tag names cannot be empty')
+            if len(tag.strip()) > 50:
+                raise ValueError('Tag names must be 50 characters or less')
+        return [tag.strip() for tag in v]
+
 @router.post("/{image_id}/tags")
 async def add_image_tags(
     image_id: int, 
-    tag_names: List[str], 
+    tag_data: TagNames, 
     db: Session = Depends(get_db)
 ):
     """Add tags to an image"""
@@ -261,7 +271,7 @@ async def add_image_tags(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
     
-    for tag_name in tag_names:
+    for tag_name in tag_data.tag_names:
         tag = db.query(Tag).filter(Tag.name == tag_name).first()
         if not tag:
             tag = Tag(name=tag_name)
@@ -271,12 +281,12 @@ async def add_image_tags(
             image.tags.append(tag)
     
     db.commit()
-    return {"message": f"Added {len(tag_names)} tags to image"}
+    return {"message": f"Added {len(tag_data.tag_names)} tags to image"}
 
 @router.delete("/{image_id}/tags")
 async def remove_image_tags(
     image_id: int,
-    tag_names: List[str],
+    tag_data: TagNames,
     db: Session = Depends(get_db)
 ):
     """Remove tags from an image"""
@@ -285,7 +295,7 @@ async def remove_image_tags(
         raise HTTPException(status_code=404, detail="Image not found")
     
     removed_count = 0
-    for tag_name in tag_names:
+    for tag_name in tag_data.tag_names:
         tag = db.query(Tag).filter(Tag.name == tag_name).first()
         if tag and tag in image.tags:
             image.tags.remove(tag)
@@ -294,10 +304,13 @@ async def remove_image_tags(
     db.commit()
     return {"message": f"Removed {removed_count} tags from image"}
 
+class ImageIds(BaseModel):
+    image_ids: List[int] = Field(..., min_items=1, max_items=100)
+
 @router.post("/download")
-async def download_images(image_ids: List[int], db: Session = Depends(get_db)):
+async def download_images(ids_data: ImageIds, db: Session = Depends(get_db)):
     """Create a ZIP file with selected images"""
-    images = db.query(Image).filter(Image.id.in_(image_ids)).all()
+    images = db.query(Image).filter(Image.id.in_(ids_data.image_ids)).all()
     
     if not images:
         raise HTTPException(status_code=404, detail="No images found")

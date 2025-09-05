@@ -19,18 +19,7 @@ class ImageScanner:
         self.metadata_extractor = MetadataExtractor()
         self.thumbnail_generator = ThumbnailGenerator()
         self.media_manager = MediaManager()
-        
-        # Check if RAW files should be excluded
-        exclude_raw = os.getenv('EXCLUDE_RAW_FILES', 'false').lower() == 'true'
-        raw_extensions = {'.cr2', '.nef', '.arw', '.dng', '.orf', '.raf', '.rw2'}
-        base_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.tif', '.bmp'}
-        
-        if exclude_raw:
-            self.supported_extensions = base_extensions
-            print("RAW files excluded from scanning")
-        else:
-            self.supported_extensions = base_extensions | raw_extensions
-            print("RAW files included in scanning")
+        self.supported_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp'}
     
     def scan_library(self, db: Session, job_id: Optional[int] = None):
         """Scan all configured library paths for images"""
@@ -78,7 +67,8 @@ class ImageScanner:
                         db.commit()
                 
                 except Exception as e:
-                    print(f"Error processing {image_path}: {e}")
+                    import logging
+                    logging.error(f"Error processing {image_path}: {e}")
                     continue
             
             # Clean up orphaned records
@@ -182,16 +172,15 @@ class ImageScanner:
             aspect_ratio=image_info.get('aspect_ratio'),
             format=image_info.get('format'),
             
-            # Photo metadata
-            camera_make=normalized.get('camera_make'),
-            camera_model=normalized.get('camera_model'),
-            lens_model=normalized.get('lens_model'),
-            focal_length=normalized.get('focal_length'),
-            aperture=normalized.get('aperture'),
-            shutter_speed=normalized.get('shutter_speed'),
-            iso=normalized.get('iso'),
-            flash_used=normalized.get('flash_used'),
-            date_taken=normalized.get('date_taken'),
+            # AI metadata
+            prompt=normalized.get('prompt'),
+            negative_prompt=normalized.get('negative_prompt'),
+            model_name=normalized.get('model_name'),
+            model_hash=normalized.get('model_hash'),
+            seed=str(normalized.get('seed')) if normalized.get('seed') else None,
+            steps=normalized.get('steps'),
+            cfg_scale=normalized.get('cfg_scale'),
+            sampler=normalized.get('sampler'),
             
             # Timestamps
             created_at=file_info.get('created', datetime.now()),
@@ -213,16 +202,15 @@ class ImageScanner:
         image.aspect_ratio = image_info.get('aspect_ratio')
         image.format = image_info.get('format')
         
-        # Update photo metadata
-        image.camera_make = normalized.get('camera_make')
-        image.camera_model = normalized.get('camera_model')
-        image.lens_model = normalized.get('lens_model')
-        image.focal_length = normalized.get('focal_length')
-        image.aperture = normalized.get('aperture')
-        image.shutter_speed = normalized.get('shutter_speed')
-        image.iso = normalized.get('iso')
-        image.flash_used = normalized.get('flash_used')
-        image.date_taken = normalized.get('date_taken')
+        # Update AI metadata
+        image.prompt = normalized.get('prompt')
+        image.negative_prompt = normalized.get('negative_prompt')
+        image.model_name = normalized.get('model_name')
+        image.model_hash = normalized.get('model_hash')
+        image.seed = str(normalized.get('seed')) if normalized.get('seed') else None
+        image.steps = normalized.get('steps')
+        image.cfg_scale = normalized.get('cfg_scale')
+        image.sampler = normalized.get('sampler')
         
         # Update timestamps
         image.modified_at = file_info.get('modified', datetime.now())
@@ -258,17 +246,8 @@ class ImageScanner:
                 # Clean up folder name for category
                 category_name = part.replace('_', ' ').replace('-', ' ').title()
                 # Remove numbers and special chars if they're just organizational
-                # Keep meaningful names, remove:
-                # - Pure numbers: "123", "001"
-                # - Dates: "2023-01-01"
-                # - Hex-like strings: "000D", "00C9", "DCIM" style camera folders
-                # - Very short meaningless names: single chars, etc.
-                if (not re.match(r'^\d+$', category_name) and 
-                    not re.match(r'^\d{4}-\d{2}-\d{2}$', category_name) and
-                    not re.match(r'^[0-9A-F]{2,6}$', category_name.replace(' ', '').upper()) and
-                    not re.match(r'^[0-9]+[A-F]+[0-9]*$', category_name.replace(' ', '').upper()) and
-                    len(category_name.replace(' ', '')) > 2 and
-                    category_name.replace(' ', '').upper() not in ['DCIM', 'IMG', 'DSC', 'PIC', 'PHOTO', 'PHOTOS']):
+                # Keep meaningful names, remove pure numbers or dates
+                if not re.match(r'^\d+$', category_name) and not re.match(r'^\d{4}-\d{2}-\d{2}$', category_name):
                     categories.append(category_name)
         
         return categories

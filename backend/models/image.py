@@ -27,29 +27,28 @@ class Image(Base):
     local_path = Column(String, index=True)  # Path to local media copy
     filename = Column(String, index=True, nullable=False)
     file_size = Column(Integer)
-    width = Column(Integer)
-    height = Column(Integer)
+    width = Column(Integer, index=True)
+    height = Column(Integer, index=True)
     aspect_ratio = Column(Float)
     format = Column(String)
     
-    # Photo metadata
-    camera_make = Column(String, index=True)
-    camera_model = Column(String, index=True)
-    lens_model = Column(String)
-    focal_length = Column(Float)
-    aperture = Column(Float)
-    shutter_speed = Column(String)
-    iso = Column(Integer)
-    flash_used = Column(Boolean)
-    date_taken = Column(DateTime)
+    # AI metadata
+    prompt = Column(Text)
+    negative_prompt = Column(Text)
+    model_name = Column(String, index=True)
+    model_hash = Column(String, index=True)
+    seed = Column(String)
+    steps = Column(Integer)
+    cfg_scale = Column(Float)
+    sampler = Column(String)
     
     # Organization
     favorite = Column(Boolean, default=False, index=True)
     rating = Column(Integer, default=0, index=True)  # 0 = unrated, 1-5 stars
     
     # Timestamps
-    created_at = Column(DateTime, server_default=func.now())
-    modified_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+    modified_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), index=True)
     indexed_at = Column(DateTime, server_default=func.now())
     
     # Relationships
@@ -70,15 +69,14 @@ class Image(Base):
             "height": self.height,
             "aspect_ratio": self.aspect_ratio,
             "format": self.format,
-            "camera_make": self.camera_make,
-            "camera_model": self.camera_model,
-            "lens_model": self.lens_model,
-            "focal_length": self.focal_length,
-            "aperture": self.aperture,
-            "shutter_speed": self.shutter_speed,
-            "iso": self.iso,
-            "flash_used": self.flash_used,
-            "date_taken": self.date_taken.isoformat() if self.date_taken else None,
+            "prompt": self.prompt,
+            "negative_prompt": self.negative_prompt,
+            "model_name": self.model_name,
+            "model_hash": self.model_hash,
+            "seed": self.seed,
+            "steps": self.steps,
+            "cfg_scale": self.cfg_scale,
+            "sampler": self.sampler,
             "favorite": self.favorite,
             "rating": self.rating,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -86,14 +84,5 @@ class Image(Base):
             "indexed_at": self.indexed_at.isoformat() if self.indexed_at else None,
             "thumbnail_path": self.thumbnail_path,
             "tags": [tag.name for tag in self.tags],
-            "categories": [cat.name for cat in self.categories],
-            # AI-specific fields (for backwards compatibility with original AI image app)
-            "prompt": getattr(self, 'prompt', None),
-            "negative_prompt": getattr(self, 'negative_prompt', None),
-            "model_name": getattr(self, 'model_name', None),
-            "model_hash": getattr(self, 'model_hash', None),
-            "seed": getattr(self, 'seed', None),
-            "steps": getattr(self, 'steps', None),
-            "cfg_scale": getattr(self, 'cfg_scale', None),
-            "sampler": getattr(self, 'sampler', None)
+            "categories": [cat.name for cat in self.categories]
         }
