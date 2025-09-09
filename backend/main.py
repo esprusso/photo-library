@@ -7,8 +7,10 @@ from typing import List, Optional
 import os
 
 from backend.models import get_db, Base, engine, Image, Tag, Category, Job, SessionLocal
+from sqlalchemy import or_ as sa_or
 from backend.models.schema_upgrade import ensure_schema
 from backend.api import images, tags, categories, jobs
+from backend.api import watch as watch_api
 from backend.services.image_scanner import ImageScanner
 from backend.services.thumbnail_generator import ThumbnailGenerator
 from backend.services.media_manager import MediaManager
@@ -34,6 +36,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Test endpoint right after app creation
+@app.get("/api/early-test")
+async def early_test_endpoint():
+    return {"message": "Early test - app created successfully", "timestamp": "2025-01-07"}
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -43,17 +50,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include API routers - some with /api prefix, some without for direct access
+# Include API routers with /api prefix only to avoid conflicts  
 app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(tags.router, prefix="/api/tags", tags=["tags"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
-
-# Also include without /api prefix for backward compatibility and direct access
-app.include_router(images.router, prefix="/images", tags=["images-direct"])
-app.include_router(tags.router, prefix="/tags", tags=["tags-direct"])
-app.include_router(categories.router, prefix="/categories", tags=["categories-direct"])
-app.include_router(jobs.router, prefix="/jobs", tags=["jobs-direct"])
+app.include_router(watch_api.router, prefix="/api/watch", tags=["watch"])
 
 # Ensure required directories exist (important for NAS/local)
 THUMBNAILS_DIR = os.getenv("THUMBNAILS_DIR", "/thumbnails")
@@ -61,6 +63,7 @@ DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "/downloads")
 MEDIA_DIR = os.getenv("MEDIA_DIR", "/data/media")
 
 os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+os.makedirs(os.path.join(THUMBNAILS_DIR, "previews"), exist_ok=True)
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -88,7 +91,40 @@ async def debug_simple():
 async def health_check():
     return {"status": "healthy"}
 
+@app.get("/api/health")
+async def api_health_check():
+    return {"status": "healthy"}
+
+@app.get("/api/test")
+async def test_endpoint():
+    return {"message": "API routes are working", "timestamp": "2025-01-07"}
+
+# Start ImportWatcher on startup
+from backend.services.import_watcher import get_import_watcher
+
+@app.on_event("startup")
+async def _start_import_watcher():
+    try:
+        iw = get_import_watcher()
+        iw.start()
+        print(f"ImportWatcher started with status: {iw.status()}")
+    except Exception as e:
+        print(f"Failed to start ImportWatcher: {e}")
+
 @app.post("/scan")
+async def scan_library_root(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Root-level scan endpoint for backwards compatibility"""
+    scanner = ImageScanner()
+    def _run_scan():
+        session = SessionLocal()
+        try:
+            scanner.scan_library(session)
+        finally:
+            session.close()
+    background_tasks.add_task(_run_scan)
+    return {"message": "Library scan started"}
+
+@app.post("/api/scan")
 async def scan_library(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Trigger a library scan to index new images"""
     scanner = ImageScanner()
@@ -142,54 +178,32 @@ def _get_image_serving_path(image: Image) -> Optional[str]:
         print(f"DEBUG: ✅ Using local media copy: {image.local_path}")
         return image.local_path
     
-    # Fallback to original path with volume mapping
+    # Fallback to original path
     if not image.path:
         print(f"DEBUG: ❌ No path available for image {image.id}")
         return None
     
-    # Check if original path exists as-is (shouldn't in container, but let's check)
-    print(f"DEBUG: Checking if original path exists: {image.path}")
+    # Since paths are already stored as container paths (/library/... or /clips/...),
+    # check if the file exists directly
     if os.path.exists(image.path):
-        print(f"DEBUG: ✅ Using original path (unexpected in container): {image.path}")
+        print(f"DEBUG: ✅ Using stored path: {image.path}")
         return image.path
-    else:
-        print(f"DEBUG: ❌ Original path does not exist: {image.path}")
     
-    # Check if path needs mapping from host to container
-    if image.path.startswith('/volume1/Heritage/AI Art'):
-        container_path = image.path.replace('/volume1/Heritage/AI Art', '/library')
-        print(f"DEBUG: Trying AI Art mapped path: {container_path}")
+    # If stored path doesn't exist, try path mapping for legacy data
+    if image.path.startswith('/volume1/homes/rheritage/Spicy Gif Library'):
+        container_path = image.path.replace('/volume1/homes/rheritage/Spicy Gif Library', '/library')
+        print(f"DEBUG: Trying mapped Gif Library path: {container_path}")
         if os.path.exists(container_path):
-            print(f"DEBUG: ✅ Using AI Art mapped path: {container_path}")
+            print(f"DEBUG: ✅ Using mapped Gif Library path: {container_path}")
             return container_path
-        else:
-            print(f"DEBUG: ❌ AI Art mapped path does not exist: {container_path}")
-    elif image.path.startswith('/volume1/Heritage/Photos'):
-        container_path = image.path.replace('/volume1/Heritage/Photos', '/library')
-        print(f"DEBUG: Trying Heritage Photos mapped path: {container_path}")
+    elif image.path.startswith('/volume1/homes/rheritage/Spicy Clip Library'):
+        container_path = image.path.replace('/volume1/homes/rheritage/Spicy Clip Library', '/clips')
+        print(f"DEBUG: Trying mapped Clip Library path: {container_path}")
         if os.path.exists(container_path):
-            print(f"DEBUG: ✅ Using Heritage Photos mapped path: {container_path}")
+            print(f"DEBUG: ✅ Using mapped Clip Library path: {container_path}")
             return container_path
-        else:
-            print(f"DEBUG: ❌ Heritage Photos mapped path does not exist: {container_path}")
     
-    # Check if path is already using container mount point but doesn't exist
-    if image.path.startswith('/library'):
-        print(f"DEBUG: Checking container library path: {image.path}")
-        if os.path.exists(image.path):
-            print(f"DEBUG: ✅ Using existing library path: {image.path}")
-            return image.path
-        else:
-            print(f"DEBUG: ❌ Library path does not exist: {image.path}")
-    
-    # List what's actually in /library to debug
-    try:
-        library_contents = os.listdir('/library')[:10]  # First 10 items
-        print(f"DEBUG: Contents of /library: {library_contents}")
-    except Exception as e:
-        print(f"DEBUG: Error listing /library: {e}")
-    
-    print(f"DEBUG: ❌ No valid path found for image {image.id}")
+    print(f"DEBUG: ❌ No valid path found for image {image.id}: {image.path}")
     return None
 
 def _get_media_type(filename: str) -> str:
@@ -203,7 +217,13 @@ def _get_media_type(filename: str) -> str:
         'gif': 'image/gif',
         'bmp': 'image/bmp',
         'tiff': 'image/tiff',
-        'tif': 'image/tiff'
+        'tif': 'image/tiff',
+        # Common video formats
+        'webm': 'video/webm',
+        'mp4': 'video/mp4',
+        'm4v': 'video/mp4',
+        'mov': 'video/quicktime',
+        'avi': 'video/x-msvideo'
     }
     return media_types.get(ext, 'application/octet-stream')
 
@@ -295,11 +315,157 @@ async def debug_images(db: Session = Depends(get_db)):
                 "id": img.id,
                 "path": img.path,
                 "filename": img.filename,
-                "exists": os.path.exists(img.path) if img.path else False
+                "exists": os.path.exists(img.path) if img.path else False,
+                "thumbnail_path": img.thumbnail_path,
+                "thumbnail_paths": img.thumbnail_paths,
+                "thumbnail_exists": os.path.exists(os.path.join(THUMBNAILS_DIR, f"{img.id}.jpg"))
             }
             for img in images
         ]
     }
+
+@app.get("/debug/test-image-serving")
+async def debug_test_image_serving(db: Session = Depends(get_db)):
+    """Test endpoint to verify image serving is working"""
+    # Get first image with an existing thumbnail
+    image = db.query(Image).first()
+    if not image:
+        return {"error": "No images in database"}
+    
+    thumbnail_path = os.path.join(THUMBNAILS_DIR, f"{image.id}.jpg")
+    
+    result = {
+        "image_id": image.id,
+        "filename": image.filename,
+        "thumbnail_url": f"/thumbnails/{image.id}.jpg",
+        "thumbnail_file_exists": os.path.exists(thumbnail_path),
+        "thumbnails_dir": THUMBNAILS_DIR,
+        "thumbnails_dir_exists": os.path.exists(THUMBNAILS_DIR),
+    }
+    
+    if os.path.exists(thumbnail_path):
+        try:
+            stat = os.stat(thumbnail_path)
+            result["thumbnail_size"] = stat.st_size
+        except Exception as e:
+            result["thumbnail_stat_error"] = str(e)
+    
+    return result
+
+@app.get("/debug/simple-stats") 
+async def debug_simple_stats(db: Session = Depends(get_db)):
+    """Simple stats that should always work"""
+    total = db.query(Image).count()
+    
+    # Get first few filenames to see what we have
+    samples = db.query(Image.filename).limit(5).all()
+    filenames = [s[0] for s in samples if s[0]]
+    
+    # Count GIFs specifically
+    gif_count = db.query(Image).filter(Image.filename.ilike("%.gif")).count()
+    
+    return {
+        "total_images": total,
+        "gif_files": gif_count, 
+        "sample_filenames": filenames
+    }
+
+@app.get("/debug/clear-database")
+async def clear_database(confirm: str = "no", db: Session = Depends(get_db)):
+    """Clear all images from database (requires confirmation)"""
+    if confirm != "yes":
+        return {"error": "Add ?confirm=yes to confirm deletion"}
+    
+    try:
+        # Count images before deletion
+        deleted_count = db.query(Image).count()
+        
+        # Delete relationships first, then images using raw SQL
+        from sqlalchemy import text
+        
+        # Delete image-tag relationships
+        db.execute(text("DELETE FROM image_tags"))
+        
+        # Delete image-category relationships  
+        db.execute(text("DELETE FROM image_categories"))
+        
+        # Now delete all images
+        db.query(Image).delete()
+        
+        db.commit()
+        
+        return {
+            "message": f"Successfully cleared {deleted_count} images from database",
+            "note": "Run a fresh scan to re-index your GIF library"
+        }
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e)}
+
+@app.get("/debug/kill-running-jobs")
+async def kill_running_jobs(db: Session = Depends(get_db)):
+    """Kill all running jobs"""
+    try:
+        from sqlalchemy import text
+        
+        # Update all running jobs to cancelled
+        result = db.execute(text("UPDATE jobs SET status = 'cancelled' WHERE status = 'running'"))
+        cancelled_count = result.rowcount
+        
+        db.commit()
+        
+        return {
+            "message": f"Cancelled {cancelled_count} running jobs",
+            "note": "You can now start a fresh scan"
+        }
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e)}
+
+@app.get("/debug/thumbnails")
+async def debug_thumbnails(db: Session = Depends(get_db)):
+    """Debug endpoint to check thumbnail generation and serving"""
+    thumbnails_dir = os.getenv("THUMBNAILS_DIR", "/thumbnails")
+    image_sample = db.query(Image).limit(10).all()
+    
+    result = {
+        "thumbnails_dir": thumbnails_dir,
+        "thumbnails_dir_exists": os.path.exists(thumbnails_dir),
+        "thumbnails_dir_writable": os.access(thumbnails_dir, os.W_OK) if os.path.exists(thumbnails_dir) else False,
+        "sample_thumbnails": []
+    }
+    
+    if os.path.exists(thumbnails_dir):
+        try:
+            thumbnail_files = os.listdir(thumbnails_dir)
+            result["total_thumbnail_files"] = len([f for f in thumbnail_files if f.endswith('.jpg')])
+            result["thumbnail_files_sample"] = thumbnail_files[:10]
+        except Exception as e:
+            result["thumbnail_files_error"] = str(e)
+    
+    for img in image_sample:
+        expected_path = os.path.join(thumbnails_dir, f"{img.id}.jpg")
+        thumbnail_info = {
+            "image_id": img.id,
+            "filename": img.filename,
+            "expected_thumbnail_path": expected_path,
+            "thumbnail_exists": os.path.exists(expected_path),
+            "thumbnail_url": f"/thumbnails/{img.id}.jpg",
+            "original_path": img.path,
+            "original_exists": os.path.exists(img.path) if img.path else False
+        }
+        
+        if os.path.exists(expected_path):
+            try:
+                stat = os.stat(expected_path)
+                thumbnail_info["thumbnail_size"] = stat.st_size
+                thumbnail_info["thumbnail_modified"] = stat.st_mtime
+            except Exception as e:
+                thumbnail_info["thumbnail_stat_error"] = str(e)
+        
+        result["sample_thumbnails"].append(thumbnail_info)
+    
+    return result
 
 @app.get("/debug/filesystem")
 async def debug_filesystem():
@@ -372,19 +538,136 @@ async def debug_filesystem():
     return result
 
 @app.get("/stats")
-async def get_stats(db: Session = Depends(get_db)):
-    """Get library statistics"""
+async def get_stats_root(db: Session = Depends(get_db)):
+    """Get library statistics - root level (safe during migrations)"""
+    from sqlalchemy import text
     total_images = db.query(Image).count()
     total_tags = db.query(Tag).count()
-    total_categories = db.query(Category).count()
+    try:
+        total_categories = db.execute(text("SELECT COUNT(*) FROM categories")).scalar() or 0
+    except Exception:
+        total_categories = 0
     favorites = db.query(Image).filter(Image.favorite == True).count()
+    # Breakdown by media
+    gifs = db.query(Image).filter(Image.filename.ilike('%.gif')).count()
+    videos = db.query(Image).filter(sa_or(
+        Image.filename.ilike('%.mp4'),
+        Image.filename.ilike('%.webm'),
+        Image.filename.ilike('%.mov'),
+        Image.filename.ilike('%.avi'),
+        Image.filename.ilike('%.m4v')
+    )).count()
+    return {
+        "total_images": total_images,
+        "total_tags": total_tags,
+        "total_categories": total_categories,
+        "favorites": favorites,
+        "gifs": gifs,
+        "videos": videos
+    }
+
+@app.get("/api/stats")
+async def get_stats(db: Session = Depends(get_db)):
+    """Get library statistics"""
+    from sqlalchemy import text
+    total_images = db.query(Image).count()
+    total_tags = db.query(Tag).count()
+    # Use raw SQL to avoid mapper selecting non-existent columns during migrations
+    try:
+        total_categories = db.execute(text("SELECT COUNT(*) FROM categories")).scalar() or 0
+    except Exception:
+        total_categories = 0
+    favorites = db.query(Image).filter(Image.favorite == True).count()
+    gifs = db.query(Image).filter(Image.filename.ilike('%.gif')).count()
+    videos = db.query(Image).filter(sa_or(
+        Image.filename.ilike('%.mp4'),
+        Image.filename.ilike('%.webm'),
+        Image.filename.ilike('%.mov'),
+        Image.filename.ilike('%.avi'),
+        Image.filename.ilike('%.m4v')
+    )).count()
     
     return {
         "total_images": total_images,
         "total_tags": total_tags,
         "total_categories": total_categories,
-        "favorites": favorites
+        "favorites": favorites,
+        "gifs": gifs,
+        "videos": videos
     }
+
+@app.get("/debug/file-formats")
+async def debug_file_formats(db: Session = Depends(get_db)):
+    """Get file format statistics to understand what's in the library"""
+    try:
+        # Get basic counts first
+        total_count = db.query(Image).count()
+        
+        # Get a sample of filenames to see what we're dealing with
+        sample_images = db.query(Image.filename).limit(10).all()
+        sample_filenames = [img[0] for img in sample_images if img[0]]
+        
+        # Count files by extension manually
+        all_images = db.query(Image.filename).filter(Image.filename.isnot(None)).all()
+        
+        extension_counts = {}
+        for img in all_images:
+            filename = img[0]
+            if '.' in filename:
+                ext = filename.lower().split('.')[-1]
+                extension_counts[ext] = extension_counts.get(ext, 0) + 1
+        
+        # Categorize extensions
+        animated_extensions = {'gif', 'mp4', 'webm', 'mov', 'avi'}
+        static_extensions = {'jpg', 'jpeg', 'png', 'webp', 'bmp', 'tiff', 'tif'}
+        
+        formats = []
+        animated_files = 0
+        
+        for ext, count in sorted(extension_counts.items(), key=lambda x: x[1], reverse=True):
+            is_animated = ext in animated_extensions
+            is_static = ext in static_extensions
+            
+            formats.append({
+                "extension": ext,
+                "count": count,
+                "is_animated": is_animated,
+                "is_static": is_static
+            })
+            
+            if is_animated:
+                animated_files += count
+        
+        # Test the actual filter
+        static_excluded_count = db.query(Image).filter(
+            ~Image.filename.ilike("%.jpg"),
+            ~Image.filename.ilike("%.jpeg"),
+            ~Image.filename.ilike("%.png"),
+            ~Image.filename.ilike("%.webp"),
+            ~Image.filename.ilike("%.bmp"),
+            ~Image.filename.ilike("%.tiff"),
+            ~Image.filename.ilike("%.tif")
+        ).count()
+        
+        return {
+            "total_files": total_count,
+            "animated_files": animated_files,
+            "static_files": total_count - animated_files,
+            "files_after_static_filter": static_excluded_count,
+            "sample_filenames": sample_filenames,
+            "formats": formats
+        }
+        
+    except Exception as e:
+        print(f"Error in debug_file_formats: {e}")
+        return {
+            "error": str(e),
+            "total_files": 0,
+            "animated_files": 0,
+            "static_files": 0,
+            "files_after_static_filter": 0,
+            "formats": []
+        }
 
 @app.get("/media-stats")
 async def get_media_stats(db: Session = Depends(get_db)):
@@ -402,3 +685,8 @@ async def get_media_stats(db: Session = Depends(get_db)):
         "images_without_local_copies": total_images - images_with_copies,
         "media_directory": media_stats
     }
+
+# Align frontend expectation: expose the same file format stats under /api/debug/file-formats
+@app.get("/api/debug/file-formats")
+async def api_debug_file_formats(db: Session = Depends(get_db)):
+    return await debug_file_formats(db)

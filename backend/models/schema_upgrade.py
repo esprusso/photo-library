@@ -4,9 +4,10 @@ from sqlalchemy import text
 
 
 def ensure_schema(engine: Engine) -> None:
-    """Ensure required columns exist on the images table.
-    For users who previously ran the simplified schema, this upgrades in-place
-    by adding missing columns. Safe to run repeatedly.
+    """Ensure required columns exist on key tables.
+    - Upgrades images table columns in-place
+    - Adds categories.cover_image_id for category cover GIFs
+    Safe to run repeatedly.
     """
     required_columns = {
         # name -> SQL type
@@ -36,6 +37,21 @@ def ensure_schema(engine: Engine) -> None:
                     conn.execute(ddl)
                 except Exception:
                     pass
+            # Ensure categories.cover_image_id exists
+            try:
+                conn.execute(text("ALTER TABLE categories ADD COLUMN IF NOT EXISTS cover_image_id INTEGER"))
+                # Optional FK (ignore failure if it exists)
+                try:
+                    conn.execute(text("ALTER TABLE categories ADD CONSTRAINT fk_categories_cover_image FOREIGN KEY (cover_image_id) REFERENCES images(id)"))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Ensure categories.media_type exists
+            try:
+                conn.execute(text("ALTER TABLE categories ADD COLUMN IF NOT EXISTS media_type VARCHAR(50) DEFAULT 'image'"))
+            except Exception:
+                pass
             conn.commit()
         else:
             # For SQLite: introspect and add only missing columns
@@ -47,4 +63,14 @@ def ensure_schema(engine: Engine) -> None:
                         conn.execute(text(f"ALTER TABLE images ADD COLUMN {col} {coltype}"))
                     except Exception:
                         pass
+            # Categories table
+            try:
+                rows = conn.execute(text("PRAGMA table_info(categories)")).fetchall()
+                existing_cols = {r[1] for r in rows}
+                if 'cover_image_id' not in existing_cols:
+                    conn.execute(text("ALTER TABLE categories ADD COLUMN cover_image_id INTEGER"))
+                if 'media_type' not in existing_cols:
+                    conn.execute(text("ALTER TABLE categories ADD COLUMN media_type VARCHAR(50) DEFAULT 'image'"))
+            except Exception:
+                pass
             conn.commit()

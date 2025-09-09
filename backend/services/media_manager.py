@@ -32,8 +32,10 @@ class MediaManager:
         """Ensure a local copy exists, creating it if necessary"""
         # Handle volume mapping for source path
         source_path = original_path
-        if original_path.startswith('/volume1/Heritage/AI Art'):
-            source_path = original_path.replace('/volume1/Heritage/AI Art', '/library')
+        if original_path.startswith('/volume1/homes/rheritage/Spicy Gif Library'):
+            source_path = original_path.replace('/volume1/homes/rheritage/Spicy Gif Library', '/library')
+        elif original_path.startswith('/volume1/homes/rheritage/Spicy Clip Library'):
+            source_path = original_path.replace('/volume1/homes/rheritage/Spicy Clip Library', '/clips')
         
         if not os.path.exists(source_path):
             print(f"ERROR: Source file not found: {source_path}")

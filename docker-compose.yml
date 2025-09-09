@@ -3,16 +3,16 @@ version: '3.8'
 services:
   db:
     image: postgres:15
-    container_name: photo-library-db
+    container_name: gif-library-db
     environment:
-      POSTGRES_DB: photo_library
+      POSTGRES_DB: gif_library
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: PhotoLib2024!
+      POSTGRES_PASSWORD: GifLib2024!
       TZ: "Etc/UTC"
     volumes:
       - db_data:/var/lib/postgresql/data
     networks:
-      - photo-network
+      - gif-network
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -24,32 +24,44 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    image: photo-library-backend:latest
-    container_name: photo-library-backend
-    ports:
-      - "8102:8000"
+    image: gif-library-backend:latest
+    container_name: gif-library-backend
+    # Backend is only accessible inside the Docker network; no host port mapping
     environment:
-      LIBRARY_PATHS: /library
-      DB_URL: postgresql://postgres:PhotoLib2024!@db:5432/photo_library
+      LIBRARY_PATHS: /library,/clips
+      DB_URL: postgresql://postgres:GifLib2024!@db:5432/gif_library
       PYTHONUNBUFFERED: 1
       TZ: "Etc/UTC"
       THUMBNAILS_DIR: /data/thumbnails
       DOWNLOADS_DIR: /data/downloads
       MEDIA_DIR: /data/media
       ENABLE_FFMPEG_FALLBACK: "true"
+      # Enhanced thumbnail configuration
+      THUMBNAIL_SIZE: 256
+      THUMBNAIL_SCALE: 2
+      ENABLE_3X_DPR: "false"
+      ANIMATED_PREVIEW_FORMAT: "auto"
+      HOVER_PRELOAD_DELAY_MS: 100
+      # Import watcher
+      IMPORT_WATCH_ENABLED: "true"
+      IMPORT_WATCH_INTERVAL_SECONDS: 60
       # Performance optimizations
-      THUMBNAIL_SIZE: 200
       MAX_WORKERS: 2
       THUMBNAIL_BATCH_SIZE: 10
       # Set to 'true' to exclude RAW files (ARW, RAF, CR2, etc.) for better performance
-      EXCLUDE_RAW_FILES: 'true'
+      EXCLUDE_RAW_FILES: 'false'
     volumes:
-      - "/volume1/Heritage/Photos:/library:ro"
-      - "/volume1/docker/apps/photo-image-library/data:/data"
-      # Bind host ffmpeg binary into the container for fallback decoding
-      - "/bin/ffmpeg:/usr/local/bin/ffmpeg:ro"
+      # Mount your photo library directory here - replace with your actual path
+      # Example for Synology: - "/volume1/photos:/library:ro"
+      # Example for generic NAS: - "/path/to/your/photos:/library:ro"
+      - "${LIBRARY_HOST_PATH:-./data/test-library}:/library:ro"
+      - "${CLIPS_HOST_PATH:-./data/test-clips}:/clips:ro"
+      - "./data:/data"
+      # Bind host ffmpeg binary into the container for video preview generation (optional)
+      # Comment out if ffmpeg is not available on your system
+      # - "/usr/bin/ffmpeg:/usr/local/bin/ffmpeg:ro"
     networks:
-      - photo-network
+      - gif-network
     depends_on:
       db:
         condition: service_healthy
@@ -59,14 +71,18 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: photo-library-frontend:latest
-    container_name: photo-library-frontend
+    image: gif-library-frontend:latest
+    container_name: gif-library-frontend
     ports:
-      - "8081:80"
+      - "8087:80"
     environment:
       TZ: "Etc/UTC"
+      # Frontend GIF Library configuration
+      VITE_HOVER_PRELOAD_DELAY_MS: 100
+      VITE_ENABLE_3X_DPR: "false"
+      VITE_DEFAULT_GRID_SIZE: "medium"
     networks:
-      - photo-network
+      - gif-network
     depends_on:
       - backend
     restart: unless-stopped
@@ -75,5 +91,5 @@ volumes:
   db_data:
 
 networks:
-  photo-network:
+  gif-network:
     driver: bridge

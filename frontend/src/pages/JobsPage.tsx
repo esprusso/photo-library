@@ -8,7 +8,9 @@ export default function JobsPage() {
   const [actionResult, setActionResult] = useState<string>('')
   const jobs = useQuery(['jobs'], () => jobApi.getJobs(), { refetchInterval: 5000 })
   const startIndexing = useMutation(jobApi.startIndexing, { onSuccess: () => qc.invalidateQueries('jobs') })
+  const startIndexingClips = useMutation(jobApi.startIndexingClips, { onSuccess: () => qc.invalidateQueries('jobs') })
   const startThumbs = useMutation(() => jobApi.startThumbnails(false), { onSuccess: () => qc.invalidateQueries('jobs') })
+  const startClipThumbs = useMutation(() => jobApi.startClipThumbnails(false), { onSuccess: () => qc.invalidateQueries('jobs') })
   
   const forceKillMutation = useMutation(
     jobApi.forceKillStalled,
@@ -58,11 +60,25 @@ export default function JobsPage() {
           {startIndexing.isLoading ? 'Starting...' : 'Start Indexing'}
         </button>
         <button
+          onClick={() => startIndexingClips.mutate()}
+          className="px-3 py-2 rounded-md bg-indigo-600 text-white text-sm disabled:opacity-60 hover:bg-indigo-700"
+          disabled={startIndexingClips.isLoading}
+        >
+          {startIndexingClips.isLoading ? 'Starting...' : 'Index Clips (skip unchanged)'}
+        </button>
+        <button
           onClick={() => startThumbs.mutate()}
           className="px-3 py-2 rounded-md bg-green-600 text-white text-sm disabled:opacity-60 hover:bg-green-700"
           disabled={startThumbs.isLoading}
         >
           {startThumbs.isLoading ? 'Starting...' : 'Generate Thumbnails'}
+        </button>
+        <button
+          onClick={() => startClipThumbs.mutate()}
+          className="px-3 py-2 rounded-md bg-emerald-600 text-white text-sm disabled:opacity-60 hover:bg-emerald-700"
+          disabled={startClipThumbs.isLoading}
+        >
+          {startClipThumbs.isLoading ? 'Starting…' : 'Generate Clip Thumbnails'}
         </button>
         <button
           onClick={() => {

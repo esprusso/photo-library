@@ -1,11 +1,30 @@
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from 'react-query'
 import { categoryApi } from '../services/api'
 
 export default function SettingsPage() {
   const queryClient = useQueryClient()
   const [results, setResults] = useState<string>('')
+  const [showAutoCategorize, setShowAutoCategorize] = useState<boolean>(() => {
+    // Default to true if not set
+    return localStorage.getItem('showAutoCategorize') !== 'false'
+  })
+  const [defaultMuted, setDefaultMuted] = useState<boolean>(() => {
+    const v = localStorage.getItem('playerDefaultMuted')
+    return v == null ? true : v === 'true'
+  })
+
+  useEffect(() => {
+    localStorage.setItem('showAutoCategorize', showAutoCategorize ? 'true' : 'false')
+    // Broadcast to other views (same SPA) so Browse updates instantly
+    const evt = new CustomEvent('ui-preferences', { detail: { showAutoCategorize } })
+    window.dispatchEvent(evt)
+  }, [showAutoCategorize])
+
+  useEffect(() => {
+    localStorage.setItem('playerDefaultMuted', defaultMuted ? 'true' : 'false')
+  }, [defaultMuted])
 
   const cleanupRawFilesMutation = useMutation(
     () => categoryApi.cleanupRawFiles(),
@@ -52,6 +71,49 @@ export default function SettingsPage() {
 
   return (
     <div className="p-4 sm:p-6 space-y-6">
+      {/* UI Preferences */}
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-md font-medium text-gray-900 dark:text-white mb-4">UI Preferences</h3>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-medium text-gray-900 dark:text-white">Show Auto‑Categorize Button</div>
+            <div className="text-sm text-gray-600 dark:text-gray-400">Controls visibility of the “📁 Auto‑Categorize” button on the Browse page toolbar.</div>
+          </div>
+          <label className="inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              className="sr-only peer"
+              checked={showAutoCategorize}
+              onChange={(e) => setShowAutoCategorize(e.target.checked)}
+            />
+            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:bg-green-600 relative transition-colors">
+              <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transform transition-transform ${showAutoCategorize ? 'translate-x-5' : ''}`}></div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      {/* Video Playback Preferences */}
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-md font-medium text-gray-900 dark:text-white mb-4">Video Playback</h3>
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-medium text-gray-900 dark:text-white">Default to mute</div>
+            <div className="text-sm text-gray-600 dark:text-gray-400">When first loading a video, start muted unless you’ve adjusted volume/mute.</div>
+          </div>
+          <label className="inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              className="sr-only peer"
+              checked={defaultMuted}
+              onChange={(e) => setDefaultMuted(e.target.checked)}
+            />
+            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:bg-green-600 relative transition-colors">
+              <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transform transition-transform ${defaultMuted ? 'translate-x-5' : ''}`}></div>
+            </div>
+          </label>
+        </div>
+      </div>
       {/* Header */}
       <div>
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Settings</h2>

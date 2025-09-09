@@ -7,11 +7,13 @@ import CreatableSelect from 'react-select/creatable'
 import ImageModal from '../components/ImageModal'
 import StarRating from '../components/StarRating'
 import FavoriteButton from '../components/FavoriteButton'
+import AspectRatioGrid from '../components/AspectRatioGrid'
 import type { Image, ImageFilters } from '../types'
 
-type GridSize = 'small' | 'medium' | 'large'
+type GridSize = 'small' | 'medium' | 'large' // legacy; will be replaced by slider
 
 export default function BrowsePage() {
+  const BROWSE_DEBUG = (import.meta as any)?.env?.VITE_BROWSE_DEBUG === 'true'
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
   const [page, setPage] = useState(1)
@@ -20,10 +22,20 @@ export default function BrowsePage() {
   const [selectedImages, setSelectedImages] = useState<Set<number>>(new Set())
   const [bulkMode, setBulkMode] = useState(false)
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null)
-  const [gridSize, setGridSize] = useState<GridSize>(() => {
-    const saved = localStorage.getItem('gridSize') as GridSize
-    return saved && ['small', 'medium', 'large'].includes(saved) ? saved : 'medium'
+  const [tileWidth, setTileWidth] = useState<number>(() => {
+    const saved = localStorage.getItem('tileWidth')
+    const num = saved ? parseInt(saved, 10) : 250
+    return isNaN(num) ? 250 : Math.min(600, Math.max(120, num))
   })
+  const [pauseGifs, setPauseGifs] = useState<boolean>(() => {
+    return localStorage.getItem('pauseGifs') === 'true'
+  })
+  const [showAutoCategorize, setShowAutoCategorize] = useState<boolean>(() => {
+    return localStorage.getItem('showAutoCategorize') !== 'false'
+  })
+  const [showScrollTop, setShowScrollTop] = useState<boolean>(false)
+  const [showSizePopover, setShowSizePopover] = useState(false)
+  const [shuffleCount, setShuffleCount] = useState<number>(0) // 0 = not shuffled, 1-5 = shuffle iterations
 
   // Keyboard shortcuts for quick selection
   useEffect(() => {
@@ -55,60 +67,6 @@ export default function BrowsePage() {
     return () => window.removeEventListener('keydown', onKey)
   }, [bulkMode, images])
 
-  const getGridClasses = (size: GridSize) => {
-    switch (size) {
-      case 'small':
-        return 'grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-2'
-      case 'medium':
-        return 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-3'
-      case 'large':
-        return 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4'
-      default:
-        return 'grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-3'
-    }
-  }
-
-  const getThumbnailClasses = (size: GridSize) => {
-    switch (size) {
-      case 'small':
-        return 'aspect-square'  // Small squares
-      case 'medium':
-        return 'aspect-square'  // Medium squares
-      case 'large':
-        return 'aspect-[4/3]'   // Larger, more rectangular
-      default:
-        return 'aspect-square'
-    }
-  }
-
-  const getContentClasses = (size: GridSize) => {
-    switch (size) {
-      case 'small':
-        return {
-          padding: 'p-1',
-          filename: 'text-[10px]',
-          dimensions: 'text-[9px]'
-        }
-      case 'medium':
-        return {
-          padding: 'p-2',
-          filename: 'text-xs',
-          dimensions: 'text-[11px]'
-        }
-      case 'large':
-        return {
-          padding: 'p-3',
-          filename: 'text-sm',
-          dimensions: 'text-xs'
-        }
-      default:
-        return {
-          padding: 'p-2',
-          filename: 'text-xs',
-          dimensions: 'text-[11px]'
-        }
-    }
-  }
 
   const handleNavigate = (direction: 'prev' | 'next') => {
     if (!selectedImageId || !images.length) return
@@ -230,9 +188,12 @@ export default function BrowsePage() {
   }
 
 
-  // Bulk tag state and mutation
+  // Bulk tag state and mutation (disabled due to timeouts)
   type TagOption = { label: string; value: string }
-  const { data: allTags } = useQuery('tags', () => tagApi.getTags('', 'name'))
+  const { data: allTags } = useQuery('tags', () => tagApi.getTags('', 'name'), {
+    enabled: false, // Temporarily disable due to API timeouts
+    retry: 1,
+  })
   const tagOptions: TagOption[] = (allTags || []).map((t: any) => ({ label: t.name, value: t.name }))
   const [bulkTagInput, setBulkTagInput] = useState('')
   const [bulkSelectedTagOptions, setBulkSelectedTagOptions] = useState<TagOption[]>([])
@@ -264,9 +225,12 @@ export default function BrowsePage() {
     bulkAddTagsMutation.mutate({ imageIds: ids, tags })
   }
 
-  // Bulk categories state and mutation
+  // Bulk categories state and mutation (disabled due to timeouts)
   type CatOption = { label: string; value: string; id?: number }
-  const { data: allCategories } = useQuery(['categories', 'name'], () => categoryApi.getCategories('', 'name'))
+  const { data: allCategories } = useQuery(['categories', 'name'], () => categoryApi.getCategories('', 'name'), {
+    enabled: false, // Temporarily disable due to API timeouts
+    retry: 1,
+  })
   const categoryOptions: CatOption[] = (allCategories || []).map((c: any) => ({ label: c.name, value: c.name, id: c.id }))
   const [bulkCategoryInput, setBulkCategoryInput] = useState('')
   const [bulkSelectedCategoryOptions, setBulkSelectedCategoryOptions] = useState<CatOption[]>([])
@@ -324,34 +288,120 @@ export default function BrowsePage() {
 
 
   // Build filters from URL search params
-  const filters: ImageFilters = {}
+  const filters: ImageFilters = {
+    media: 'gif'  // Only show GIFs on Browse; videos are in Clips
+  }
   const rating = searchParams.get('rating')
   const favorite = searchParams.get('favorite')
   const categories = searchParams.get('categories')
   const tagsParam = searchParams.get('tags')
+  const includeStatic = searchParams.get('include_static')
+  
   if (rating) filters.rating = parseInt(rating)
   if (favorite === 'true') filters.favorite = true
   if (categories) filters.categories = [categories]
   if (tagsParam) filters.tags = tagsParam.split(',').map(t => t.trim()).filter(Boolean)
+  if (includeStatic === 'true') filters.exclude_static = false
 
-  const { data, isLoading, isError, refetch, isFetching } = useQuery(
-    ['images', page, filters],
-    () => imageApi.getImages(page, 50, filters),
+  const { data, isLoading, isError, refetch, isFetching, error } = useQuery(
+    ['images', page, filters, shuffleCount],
+    () => imageApi.getImages(page, 50, filters, { sort_by: shuffleCount > 0 ? 'random' : 'created_at', sort_order: 'desc' }),
     {
       keepPreviousData: true,
+      retry: 2,
+      retryDelay: 1000,
       onSuccess: (res) => {
         if (page === 1) setImages(res)
         else setImages((prev) => [...prev, ...res])
       },
+      onError: (err: any) => {
+        if (BROWSE_DEBUG) {
+          console.error('Failed to fetch images:', err)
+          if (err.code === 'ECONNABORTED') {
+            console.error('API connection timed out - check if backend is running')
+          }
+        }
+      }
     }
   )
 
+  // Sync cached data to local state to avoid brief "No images" flash when toggling shuffle
+  useEffect(() => {
+    if (data && page === 1 && images.length === 0) setImages(data)
+  }, [data])
+
+  // Test API connectivity on mount and check file formats
+  useEffect(() => {
+    const testConnection = async () => {
+      try {
+        if (BROWSE_DEBUG) console.log('Testing API connectivity...')
+        const result = await libraryApi.testConnection()
+        if (BROWSE_DEBUG) console.log('API connection successful:', result)
+        
+        // Check what file formats we have
+        try {
+          const formatResponse = await fetch('/api/debug/file-formats')
+          if (formatResponse.ok) {
+            const formatData = await formatResponse.json()
+            if (formatData.error) {
+              if (BROWSE_DEBUG) console.error('Debug endpoint error:', formatData.error)
+              // Try simpler fallback
+              const simpleResponse = await fetch('/api/debug/simple-stats')
+              if (simpleResponse.ok) {
+                const simpleData = await simpleResponse.json()
+                if (BROWSE_DEBUG) {
+                  console.log('=== SIMPLE FILE BREAKDOWN ===')
+                  console.log(`Total images in database: ${simpleData.total_images}`)
+                  console.log(`GIF files found: ${simpleData.gif_files}`)
+                  console.log('Sample filenames:', simpleData.sample_filenames)
+                }
+                
+                if (simpleData.gif_files === 0) {
+                  console.warn('⚠️ NO GIF FILES FOUND! Your library may contain only static images.')
+                  console.warn('💡 Try clicking "🎬 Animated Only" button to switch to "📷 All Formats"')
+                }
+              }
+            } else {
+              if (BROWSE_DEBUG) {
+                console.log('=== FILE FORMAT BREAKDOWN ===')
+                console.log(`Total files in database: ${formatData.total_files}`)
+                console.log(`Animated files (GIFs, videos): ${formatData.animated_files}`) 
+                console.log(`Static files (JPGs, PNGs, etc.): ${formatData.static_files}`)
+                console.log(`Files remaining after exclude_static filter: ${formatData.files_after_static_filter}`)
+                console.log('Sample filenames:', formatData.sample_filenames)
+                console.log('File formats breakdown:', formatData.formats)
+              }
+              
+              if (formatData.animated_files === 0) {
+                console.warn('⚠️ NO ANIMATED FILES FOUND! All files appear to be static images.')
+                console.warn('💡 Try clicking "🎬 Animated Only" button to switch to "📷 All Formats"')
+              } else if (formatData.files_after_static_filter === 0) {
+                console.warn('⚠️ FILTER EXCLUDING ALL FILES! The exclude_static filter is removing everything.')
+              } else {
+                if (BROWSE_DEBUG) console.log(`✅ Found ${formatData.files_after_static_filter} files that should display with current filter`)
+              }
+            }
+          }
+        } catch (debugError) {
+          if (BROWSE_DEBUG) console.error('Failed to fetch debug info:', debugError)
+        }
+      } catch (err) {
+        if (BROWSE_DEBUG) console.error('API connection failed:', err)
+      }
+    }
+    testConnection()
+  }, [])
+
   // Poll running jobs for visibility of background processing
   const indexingJobs = useQuery(['jobs', 'indexing', 'running'], () => jobApi.getJobs('indexing', 'running'), {
-    refetchInterval: 3000,
+    enabled: true, // Re-enabled for progress tracking
+    refetchInterval: 2000,
+    retry: 1,
   })
   const thumbnailJobs = useQuery(['jobs', 'thumbnailing', 'running'], () => jobApi.getJobs('thumbnailing', 'running'), {
-    refetchInterval: 3000,
+    enabled: true, // Re-enabled for progress tracking
+    refetchInterval: 2000, 
+    retry: 1,
   })
 
   const scanMutation = useMutation(libraryApi.scanLibrary, {
@@ -377,7 +427,7 @@ export default function BrowsePage() {
     // Reset to page 1 when filters change
     setPage(1)
     setImages([])
-  }, [JSON.stringify(filters)])
+  }, [JSON.stringify(filters), shuffleCount])
 
   useEffect(() => {
     // Refetch on page change
@@ -385,9 +435,49 @@ export default function BrowsePage() {
   }, [page])
 
   useEffect(() => {
-    // Save grid size preference to localStorage
-    localStorage.setItem('gridSize', gridSize)
-  }, [gridSize])
+    localStorage.setItem('tileWidth', String(tileWidth))
+  }, [tileWidth])
+
+  useEffect(() => {
+    localStorage.setItem('pauseGifs', pauseGifs ? 'true' : 'false')
+  }, [pauseGifs])
+
+  // Show "Return to Top" after scrolling down
+  useEffect(() => {
+    const onScroll = () => {
+      const scrollTop = window.pageYOffset || document.documentElement.scrollTop
+      setShowScrollTop(scrollTop > 200)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    onScroll()
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // Listen for UI preference changes (from Settings) and apply instantly
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<any>).detail || {}
+      if (typeof detail.showAutoCategorize === 'boolean') {
+        setShowAutoCategorize(detail.showAutoCategorize)
+      }
+    }
+    window.addEventListener('ui-preferences', handler as any)
+    return () => window.removeEventListener('ui-preferences', handler as any)
+  }, [])
+
+  // Keep grid in sync when a single image is updated in the modal
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<any>).detail || {}
+      const id: number | undefined = detail.id
+      if (!id) return
+      setImages(prev => prev.map(img => (
+        img.id === id ? { ...img, ...('rating' in detail ? { rating: detail.rating } : {}), ...('favorite' in detail ? { favorite: detail.favorite } : {}) } : img
+      )))
+    }
+    window.addEventListener('image-updated', handler as any)
+    return () => window.removeEventListener('image-updated', handler as any)
+  }, [])
 
   // Infinite scroll effect
   useEffect(() => {
@@ -417,11 +507,57 @@ export default function BrowsePage() {
     }
   }, [isFetching, data])
 
+  const handleShuffleClick = () => {
+    if (shuffleCount >= 5) {
+      // Reset to original order after 5 shuffles
+      setShuffleCount(0)
+    } else {
+      // Increment shuffle count
+      setShuffleCount(prev => prev + 1)
+    }
+  }
+
+  const getShuffleButtonStyle = () => {
+    if (shuffleCount === 0) {
+      return 'bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+    }
+    
+    const colors = [
+      'bg-purple-600 text-white', // Shuffle 1
+      'bg-blue-600 text-white',   // Shuffle 2
+      'bg-green-600 text-white',  // Shuffle 3
+      'bg-orange-600 text-white', // Shuffle 4
+      'bg-red-600 text-white'     // Shuffle 5
+    ]
+    
+    return colors[shuffleCount - 1] || colors[0]
+  }
+
+  const getShuffleButtonText = () => {
+    if (shuffleCount === 0) {
+      return 'Shuffle'
+    } else if (shuffleCount === 1) {
+      return '🔀 Shuffled'
+    } else {
+      return `🔀 Shuffled ${shuffleCount}`
+    }
+  }
+
+  const getShuffleButtonTitle = () => {
+    if (shuffleCount === 0) {
+      return 'Shuffle GIFs'
+    } else if (shuffleCount < 5) {
+      return `Shuffled order ${shuffleCount}/5 (click to shuffle again)`
+    } else {
+      return 'Shuffled 5/5 (click to reset to original order)'
+    }
+  }
+
   return (
     <div className="p-4 sm:p-6 space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          {(filters.rating || filters.favorite) && (
+          {(filters.rating || filters.favorite || filters.exclude_static) && (
             <div className="flex items-center space-x-2 mt-1">
               {filters.rating && (
                 <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
@@ -431,6 +567,11 @@ export default function BrowsePage() {
               {filters.favorite && (
                 <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
                   Favorites
+                </span>
+              )}
+              {filters.media === 'gif' && (
+                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                  GIFs Only
                 </span>
               )}
               <Link 
@@ -443,60 +584,50 @@ export default function BrowsePage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* Grid Size Toggle */}
+          {/* Format Filter Toggle */}
           <div className="flex items-center space-x-1 bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
             <button
-              onClick={() => setGridSize('small')}
-              className={`p-1.5 rounded text-xs font-medium transition-colors ${
-                gridSize === 'small'
-                  ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
+              onClick={() => {
+                const newUrl = new URL(window.location)
+                if (filters.exclude_static) {
+                  newUrl.searchParams.set('include_static', 'true')
+                } else {
+                  newUrl.searchParams.delete('include_static')
+                }
+                window.history.pushState({}, '', newUrl.toString())
+                window.location.reload()
+              }}
+              className={`px-2 py-1 rounded text-xs font-medium transition-colors ${
+                filters.exclude_static
+                  ? 'bg-green-500 text-white shadow-sm'
+                  : 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
               }`}
-              title="Small thumbnails"
+              title={filters.media === 'gif' ? 'Showing GIFs only' : 'Showing all formats'}
             >
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="3" y="3" width="4" height="4" />
-                <rect x="10" y="3" width="4" height="4" />
-                <rect x="17" y="3" width="4" height="4" />
-                <rect x="3" y="10" width="4" height="4" />
-                <rect x="10" y="10" width="4" height="4" />
-                <rect x="17" y="10" width="4" height="4" />
-                <rect x="3" y="17" width="4" height="4" />
-                <rect x="10" y="17" width="4" height="4" />
-                <rect x="17" y="17" width="4" height="4" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setGridSize('medium')}
-              className={`p-1.5 rounded text-xs font-medium transition-colors ${
-                gridSize === 'medium'
-                  ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
-              }`}
-              title="Medium thumbnails"
-            >
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="3" y="3" width="7" height="7" />
-                <rect x="14" y="3" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" />
-                <rect x="14" y="14" width="7" height="7" />
-              </svg>
-            </button>
-            <button
-              onClick={() => setGridSize('large')}
-              className={`p-1.5 rounded text-xs font-medium transition-colors ${
-                gridSize === 'large'
-                  ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-white shadow-sm'
-                  : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
-              }`}
-              title="Large thumbnails"
-            >
-              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="3" y="3" width="18" height="8" />
-                <rect x="3" y="13" width="18" height="8" />
-              </svg>
+              {filters.media === 'gif' ? '🎬 GIFs Only' : '📷 All Formats'}
             </button>
           </div>
+          {/* Size Slider */}
+          <div className="hidden md:flex items-center space-x-2 bg-gray-100 dark:bg-gray-700 rounded-lg px-2 py-1">
+            <span className="text-xs text-gray-600 dark:text-gray-300">Size</span>
+            <input
+              type="range"
+              min={120}
+              max={600}
+              step={10}
+              value={tileWidth}
+              onChange={(e) => setTileWidth(parseInt(e.target.value, 10))}
+              className="w-40"
+            />
+            <span className="text-xs text-gray-600 dark:text-gray-300 w-10 text-right">{tileWidth}px</span>
+          </div>
+          <button
+            onClick={handleShuffleClick}
+            className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${getShuffleButtonStyle()}`}
+            title={getShuffleButtonTitle()}
+          >
+            {getShuffleButtonText()}
+          </button>
           <button
             onClick={toggleBulkMode}
             className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -507,14 +638,16 @@ export default function BrowsePage() {
           >
             {bulkMode ? 'Exit Selection' : 'Select Images'}
           </button>
-          <button
-            onClick={() => categorizeMutation.mutate()}
-            className="px-3 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
-            disabled={categorizeMutation.isLoading}
-            title="Auto-categorize images based on folder structure"
-          >
-            {categorizeMutation.isLoading ? 'Categorizing…' : '📁 Auto-Categorize'}
-          </button>
+          {showAutoCategorize && (
+            <button
+              onClick={() => categorizeMutation.mutate()}
+              className="px-3 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
+              disabled={categorizeMutation.isLoading}
+              title="Auto-categorize images based on folder structure"
+            >
+              {categorizeMutation.isLoading ? 'Categorizing…' : '📁 Auto-Categorize'}
+            </button>
+          )}
           <button
             onClick={() => scanMutation.mutate()}
             className="px-3 py-2 rounded-md bg-primary-600 text-white text-sm hover:bg-primary-700 disabled:opacity-60"
@@ -525,92 +658,78 @@ export default function BrowsePage() {
         </div>
       </div>
 
-      {/* Active job banners */}
-      {indexingJobs.data && indexingJobs.data[0] && (
-        <JobBanner title="Indexing" job={{
-          progress: indexingJobs.data[0].progress,
-          processed: indexingJobs.data[0].processed_items,
-          total: indexingJobs.data[0].total_items,
-        }} />
-      )}
-      {thumbnailJobs.data && thumbnailJobs.data[0] && (
-        <JobBanner title="Generating thumbnails" job={{
-          progress: thumbnailJobs.data[0].progress,
-          processed: thumbnailJobs.data[0].processed_items,
-          total: thumbnailJobs.data[0].total_items,
-        }} />
-      )}
-
-      {isLoading && images.length === 0 ? (
-        <div className="text-gray-600 dark:text-gray-300">Loading images…</div>
-      ) : isError ? (
-        <div className="text-red-600">Failed to load images.</div>
-      ) : images.length === 0 ? (
-        <div className="text-gray-600 dark:text-gray-300">No images found. Try Scan Library.</div>
-      ) : (
-        <div className={getGridClasses(gridSize)}>
-          {images.map((img) => (
-            <div 
-              key={img.id} 
-              className={`bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden cursor-pointer hover:shadow-lg transition-all ${
-                bulkMode && selectedImages.has(img.id) ? 'ring-2 ring-blue-500' : ''
-              }`}
-              onClick={(e) => handleImageClick(img.id, e)}
-            >
-              <div className={`${getThumbnailClasses(gridSize)} bg-gray-100 dark:bg-gray-700 overflow-hidden relative`}>
-                <img
-                  src={img.thumbnail_path}
-                  alt={img.filename}
-                  onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).style.display = 'none'
-                  }}
-                  className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
-                  loading="lazy"
-                />
-                
-                {/* Bulk selection checkbox */}
-                {bulkMode && (
-                  <div className="absolute top-2 left-2 z-10">
-                    <input
-                      type="checkbox"
-                      checked={selectedImages.has(img.id)}
-                      onChange={() => toggleImageSelection(img.id)}
-                      className="w-5 h-5 text-blue-600 bg-white border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                )}
-                
-                {/* Favorite indicator */}
-                {img.favorite && (
-                  <div className={`absolute top-2 ${bulkMode ? 'right-2' : 'right-2'}`}>
-                    <FavoriteButton isFavorite={true} readonly size="sm" />
-                  </div>
-                )}
-                
-                {/* Rating indicator */}
-                {img.rating > 0 && (
-                  <div className="absolute bottom-2 left-2 bg-black bg-opacity-60 rounded px-1">
-                    <StarRating rating={img.rating} readonly size="sm" />
-                  </div>
-                )}
-              </div>
-              <div className={getContentClasses(gridSize).padding}>
-                <div 
-                  className={`${getContentClasses(gridSize).filename} text-gray-700 dark:text-gray-200 truncate`} 
-                  title={img.filename}
-                >
-                  {img.filename}
-                </div>
-                {gridSize !== 'small' && (
-                  <div className={`${getContentClasses(gridSize).dimensions} text-gray-500`}>
-                    {img.width ?? '?'}×{img.height ?? '?'}
-                  </div>
-                )}
-              </div>
-            </div>
+      {/* Active job banners for scan progress */}
+      {indexingJobs.data && indexingJobs.data.length > 0 && (
+        <div className="space-y-2">
+          {indexingJobs.data.map((job: any) => (
+            <JobBanner key={job.id} title="🔍 Scanning Library" job={job} />
           ))}
         </div>
+      )}
+      
+      {thumbnailJobs.data && thumbnailJobs.data.length > 0 && (
+        <div className="space-y-2">
+          {thumbnailJobs.data.map((job: any) => (
+            <JobBanner key={job.id} title="🖼️ Generating Thumbnails" job={job} />
+          ))}
+        </div>
+      )}
+
+      {(isLoading || isFetching) && images.length === 0 ? (
+        <div className="text-gray-600 dark:text-gray-300">Loading images…</div>
+      ) : isError ? (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-4">
+          <div className="text-red-800 dark:text-red-200 font-medium">Failed to load images</div>
+          <div className="text-red-600 dark:text-red-300 text-sm mt-2">
+            {error && (error as any).code === 'ECONNABORTED' 
+              ? 'API connection timed out. Check if the backend is running.'
+              : 'Unable to connect to the API. Please check your connection.'}
+          </div>
+          <button 
+            onClick={() => refetch()} 
+            className="mt-3 px-3 py-1 bg-red-100 hover:bg-red-200 dark:bg-red-800 dark:hover:bg-red-700 text-red-800 dark:text-red-200 rounded text-sm"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (data && data.length === 0 && !isFetching) ? (
+        <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-md p-4">
+          <div className="text-yellow-800 dark:text-yellow-200 font-medium">No images found</div>
+          <div className="text-yellow-700 dark:text-yellow-300 text-sm mt-2">
+            {filters.media === 'gif' ? (
+              <>
+                Currently showing GIFs only. 
+                <button 
+                  onClick={() => {
+                    const newUrl = new URL(window.location)
+                    newUrl.searchParams.set('include_static', 'true')
+                    window.history.pushState({}, '', newUrl.toString())
+                    window.location.reload()
+                  }}
+                  className="ml-1 text-yellow-600 dark:text-yellow-400 underline hover:no-underline"
+                >
+                  Click here to show all formats
+                </button>
+                , or try scanning your library.
+              </>
+            ) : (
+              'Try scanning your library to index new images.'
+            )}
+          </div>
+          <div className="text-yellow-600 dark:text-yellow-400 text-xs mt-2">
+            Check the browser console for file format statistics.
+          </div>
+        </div>
+      ) : (
+        <AspectRatioGrid
+          images={images}
+          tileWidth={tileWidth}
+          bulkMode={bulkMode}
+          selectedImages={selectedImages}
+          onImageClick={handleImageClick}
+          onToggleSelection={toggleImageSelection}
+          paused={pauseGifs}
+        />
       )}
 
       {isFetching && images.length > 0 && (
@@ -788,28 +907,97 @@ export default function BrowsePage() {
         onNavigate={handleNavigate}
       />
 
-      {/* Floating Select FAB */}
-      <button
-        onClick={toggleBulkMode}
-        className={`fixed right-4 md:right-6 bottom-6 z-40 rounded-full shadow-lg focus:outline-none transition transform hover:scale-105 
-          ${bulkMode ? 'bg-blue-600 text-white' : 'bg-gray-900 text-white dark:bg-gray-200 dark:text-gray-900'}`}
-        style={{ padding: '12px 16px' }}
-        title={bulkMode ? 'Exit selection (Esc)' : 'Select images (S)'}
-        aria-label={bulkMode ? 'Exit selection' : 'Select images'}
-      >
-        {bulkMode ? (
-          <span className="flex items-center space-x-2">
-            <span>Exit</span>
-            <span className="ml-2 inline-flex items-center justify-center text-xs font-semibold bg-white/20 rounded px-2 py-0.5">
-              {selectedImages.size}
+      {/* Floating Action Buttons (bottom-right) - Hidden on mobile when modal is open */}
+      <div className={`fixed right-4 md:right-6 bottom-6 z-50 flex flex-col items-end gap-3 ${
+        selectedImageId ? 'hidden md:flex' : 'flex'
+      }`}>
+        {/* Select FAB */}
+        <button
+          onClick={toggleBulkMode}
+          className={`rounded-full shadow-lg focus:outline-none transition transform hover:scale-105 px-4 py-3 
+            ${bulkMode ? 'bg-blue-600 text-white' : 'bg-gray-900 text-white dark:bg-gray-200 dark:text-gray-900'}`}
+          title={bulkMode ? 'Exit selection (Esc)' : 'Select images (S)'}
+          aria-label={bulkMode ? 'Exit selection' : 'Select images'}
+        >
+          {bulkMode ? (
+            <span className="flex items-center space-x-2">
+              <span>Exit</span>
+              <span className="ml-2 inline-flex items-center justify-center text-xs font-semibold bg-white/20 rounded px-2 py-0.5">
+                {selectedImages.size}
+              </span>
             </span>
-          </span>
-        ) : (
-          <span className="flex items-center space-x-2">
-            <span>Select</span>
-          </span>
+          ) : (
+            <span className="flex items-center space-x-2">
+              <span>Select</span>
+            </span>
+          )}
+        </button>
+
+        {/* Size control FAB with popover (usable while scrolling) */}
+        <div className="relative">
+          <button
+            onClick={() => setShowSizePopover((v) => !v)}
+            className="rounded-full shadow-lg focus:outline-none transition transform hover:scale-105 px-4 py-3 bg-white dark:bg-gray-200 text-gray-900"
+            title="Adjust size"
+            aria-label="Adjust size"
+          >
+            📏 Size
+          </button>
+          {showSizePopover && (
+            <div className="absolute bottom-full right-0 mb-2 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg p-3 shadow-xl w-64">
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setTileWidth((w) => Math.max(120, w - 20))}
+                  className="px-2 py-1 text-sm rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200"
+                  title="Smaller"
+                >
+                  −
+                </button>
+                <input
+                  type="range"
+                  min={120}
+                  max={600}
+                  step={10}
+                  value={tileWidth}
+                  onChange={(e) => setTileWidth(parseInt(e.target.value, 10))}
+                  className="flex-1"
+                />
+                <button
+                  onClick={() => setTileWidth((w) => Math.min(600, w + 20))}
+                  className="px-2 py-1 text-sm rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200"
+                  title="Larger"
+                >
+                  +
+                </button>
+                <span className="text-xs text-gray-600 dark:text-gray-300 w-12 text-right">{tileWidth}px</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Play/Pause GIFs FAB */}
+        <button
+          onClick={() => setPauseGifs((v) => !v)}
+          className={`rounded-full shadow-lg focus:outline-none transition transform hover:scale-105 px-4 py-3 text-sm 
+            ${pauseGifs ? 'bg-white dark:bg-gray-200 text-gray-900' : 'bg-green-600 text-white'}`}
+          title={pauseGifs ? 'GIFs paused' : 'GIFs playing'}
+          aria-label={pauseGifs ? 'Pause GIFs' : 'Play GIFs'}
+        >
+          {pauseGifs ? '⏸️ Paused' : '▶️ Playing'}
+        </button>
+
+        {/* Return to Top FAB */}
+        {showScrollTop && (
+          <button
+            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            className="rounded-full shadow-lg focus:outline-none transition transform hover:scale-105 px-4 py-3 bg-gray-800 text-white dark:bg-gray-200 dark:text-gray-900"
+            title="Return to top"
+            aria-label="Return to top"
+          >
+            ↑ Top
+          </button>
         )}
-      </button>
+      </div>
     </div>
   )
 }

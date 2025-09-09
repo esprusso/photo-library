@@ -5,9 +5,10 @@ interface StarRatingProps {
   onRatingChange?: (rating: number) => void
   readonly?: boolean
   size?: 'sm' | 'md' | 'lg'
+  darkBackground?: boolean
 }
 
-export default function StarRating({ rating, onRatingChange, readonly = false, size = 'md' }: StarRatingProps) {
+export default function StarRating({ rating, onRatingChange, readonly = false, size = 'md', darkBackground = false }: StarRatingProps) {
   const [hoveredRating, setHoveredRating] = useState(0)
 
   const sizeClasses = {
@@ -28,11 +29,14 @@ export default function StarRating({ rating, onRatingChange, readonly = false, s
     if (activeRating >= starIndex) {
       return readonly ? 'text-yellow-400' : 'text-yellow-500 hover:text-yellow-400'
     }
+    if (darkBackground) {
+      return 'text-gray-600 hover:text-yellow-300'
+    }
     return 'text-gray-300 hover:text-yellow-300'
   }
 
   return (
-    <div className="flex items-center space-x-1">
+    <div className={`flex items-center space-x-1 ${darkBackground ? 'bg-black bg-opacity-50 rounded-full px-3 py-2' : ''}`}>
       {[1, 2, 3, 4, 5].map((starIndex) => (
         <button
           key={starIndex}

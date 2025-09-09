@@ -21,8 +21,8 @@ class ThumbnailGenerator:
         # Ensure thumbnail directory exists
         os.makedirs(self.thumbnail_dir, exist_ok=True)
     
-    def generate_thumbnails(self, db: Session, job_id: Optional[int] = None, force_regenerate: bool = False):
-        """Generate thumbnails for all images"""
+    def generate_thumbnails(self, db: Session, job_id: Optional[int] = None, force_regenerate: bool = False, only_videos: bool = False):
+        """Generate thumbnails for all images or only videos when only_videos=True"""
         
         if job_id:
             job = db.query(Job).filter(Job.id == job_id).first()
@@ -32,8 +32,18 @@ class ThumbnailGenerator:
                 db.commit()
         
         try:
-            # Get all images
-            images = db.query(Image).all()
+            # Get all images (optionally filter to videos only)
+            if only_videos:
+                from sqlalchemy import or_
+                images = db.query(Image).filter(or_(
+                    Image.filename.ilike('%.mp4'),
+                    Image.filename.ilike('%.webm'),
+                    Image.filename.ilike('%.mov'),
+                    Image.filename.ilike('%.avi'),
+                    Image.filename.ilike('%.m4v')
+                )).all()
+            else:
+                images = db.query(Image).all()
             
             if job_id:
                 job.total_items = len(images)
@@ -105,17 +115,32 @@ class ThumbnailGenerator:
         try:
             # Check file extension first (more reliable for AI-generated images)
             file_ext = os.path.splitext(source_path)[1].lower()
-            valid_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.tif'}
+            image_exts = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff', '.tif'}
+            video_exts = {'.mp4', '.webm', '.mov', '.avi', '.m4v'}
             
-            if file_ext not in valid_extensions:
-                # Only check MIME if extension is suspicious
+            if file_ext in video_exts:
+                # Use ffmpeg to extract poster and multiple preview frames
+                generated = False
+                if self._ffmpeg_thumbnail(source_path, thumbnail_path):
+                    generated = True
+                previews_dir = os.path.join(self.thumbnail_dir, 'previews', str(image.id))
+                try:
+                    self._ffmpeg_multi_thumbnails(source_path, previews_dir, count=5)
+                except Exception as e:
+                    print(f"ffmpeg previews failed for {source_path}: {e}")
+                return 'generated' if generated else 'error'
+            
+            # For image types, proceed with PIL
+            if file_ext not in image_exts:
+                # Check MIME if extension is uncommon
                 try:
                     mime = magic.from_file(source_path, mime=True)
-                    if not (isinstance(mime, str) and mime.startswith('image/')):
-                        print(f"Unsupported file: {file_ext} extension with {mime} mime type — {source_path}")
-                        return 'error'
+                    if isinstance(mime, str) and mime.startswith('video/'):
+                        if self._ffmpeg_thumbnail(source_path, thumbnail_path):
+                            return 'generated'
+                        else:
+                            return 'error'
                 except Exception:
-                    # If libmagic fails, continue and let PIL try
                     pass
 
             # Try multiple approaches for problematic AI-generated images
@@ -201,8 +226,15 @@ class ThumbnailGenerator:
             except Exception as alt_error:
                 print(f"Alternative PIL approach also failed for {source_path}: {alt_error}")
             
-            # Skip FFmpeg fallback for now as it's not properly configured
-            print(f"Skipping problematic image: {source_path}")
+            # Last resort: if this might be a video, try ffmpeg
+            try:
+                mime = magic.from_file(source_path, mime=True)
+                if isinstance(mime, str) and mime.startswith('video/'):
+                    if self._ffmpeg_thumbnail(source_path, thumbnail_path):
+                        return 'generated'
+            except Exception:
+                pass
+            print(f"Skipping file without thumbnail: {source_path}")
             return 'error'
 
     def _ffmpeg_thumbnail(self, src_path: str, dst_path: str) -> bool:
@@ -222,6 +254,42 @@ class ThumbnailGenerator:
         except subprocess.CalledProcessError as e:
             print(f"ffmpeg thumbnail failed for {src_path}: {e}")
             return False
+
+    def _ffprobe_duration(self, src_path: str) -> float:
+        try:
+            out = subprocess.check_output([
+                'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1', src_path
+            ])
+            return float(out.decode('utf-8').strip())
+        except Exception:
+            return 0.0
+
+    def _ffmpeg_multi_thumbnails(self, src_path: str, out_dir: str, count: int = 5) -> int:
+        os.makedirs(out_dir, exist_ok=True)
+        duration = self._ffprobe_duration(src_path)
+        if duration <= 0:
+            # fallback: just extract frame 1
+            dst = os.path.join(out_dir, 'frame_1.jpg')
+            return 1 if self._ffmpeg_thumbnail(src_path, dst) else 0
+        made = 0
+        for i in range(1, count + 1):
+            # pick timestamps at equal intervals
+            t = max(0.1, duration * (i / (count + 1)))
+            dst = os.path.join(out_dir, f'frame_{i}.jpg')
+            size = self.thumbnail_size
+            vf = f"scale=w={size}:h={size}:force_original_aspect_ratio=decrease"
+            cmd = [
+                'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                '-ss', str(t), '-i', src_path, '-vf', vf, '-frames:v', '1', dst
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+                if os.path.exists(dst):
+                    made += 1
+            except subprocess.CalledProcessError as e:
+                print(f"ffmpeg multi-thumb failed at {t}s for {src_path}: {e}")
+        return made
     
     def generate_single_thumbnail(self, image: Image, force_regenerate: bool = False) -> bool:
         """Generate thumbnail for a single image"""
@@ -250,14 +318,18 @@ class ThumbnailGenerator:
         if os.path.exists(image.path):
             return image.path
         
-        # Check if path needs mapping from host to container
-        if image.path.startswith('/volume1/Heritage/AI Art'):
-            container_path = image.path.replace('/volume1/Heritage/AI Art', '/library')
+        # Check if path needs mapping from host to container (libraries)
+        if image.path.startswith('/volume1/homes/rheritage/Spicy Gif Library'):
+            container_path = image.path.replace('/volume1/homes/rheritage/Spicy Gif Library', '/library')
+            if os.path.exists(container_path):
+                return container_path
+        if image.path.startswith('/volume1/homes/rheritage/Spicy Clip Library'):
+            container_path = image.path.replace('/volume1/homes/rheritage/Spicy Clip Library', '/clips')
             if os.path.exists(container_path):
                 return container_path
         
         # Check if path is already using container mount point
-        if image.path.startswith('/library'):
+        if image.path.startswith('/library') or image.path.startswith('/clips'):
             if os.path.exists(image.path):
                 return image.path
         

@@ -13,7 +13,7 @@ export default function RandomPage() {
     setLoading(true)
     setError(null)
     try {
-      const img = await imageApi.getRandom()
+      const img = await imageApi.getRandom('gif')
       setImageId(img.id)
     } catch (e: any) {
       setError('Could not load a random image. Try again.')

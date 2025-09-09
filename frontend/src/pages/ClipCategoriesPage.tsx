@@ -1,0 +1,727 @@
+import { useState, useEffect, useRef } from 'react'
+import { useQuery, useMutation, useQueryClient } from 'react-query'
+import { Link } from 'react-router-dom'
+import { categoryApi, imageApi, jobApi } from '../services/api'
+import type { Category, Job } from '../types'
+
+export default function ClipCategoriesPage() {
+  const qc = useQueryClient()
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null)
+  const [sortBy, setSortBy] = useState<'name' | 'image_count'>('name')
+  const [selectedCategories, setSelectedCategories] = useState<Set<number>>(new Set())
+  const [bulkMode, setBulkMode] = useState(false)
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null)
+  const [showAutoCategorize, setShowAutoCategorize] = useState<boolean>(() => {
+    return localStorage.getItem('showAutoCategorize') !== 'false'
+  })
+  const [createCoverId, setCreateCoverId] = useState<number | undefined>(undefined)
+  const [autoCategorizeJobId, setAutoCategorizeJobId] = useState<number | null>(null)
+  const progressInterval = useRef<number | null>(null)
+  
+  const { data: categories, isLoading } = useQuery(
+    ['clip-categories', sortBy], 
+    () => {
+      // Map frontend sort values to backend expected values
+      const backendSortBy = sortBy === 'image_count' ? 'count' : sortBy
+      return categoryApi.getCategories('', backendSortBy, 'video')
+    }
+  )
+
+  // Query for auto-categorization job status
+  const { data: autoCategorizeJob } = useQuery<Job | null>(
+    ['auto-categorize-job', autoCategorizeJobId],
+    () => autoCategorizeJobId ? jobApi.getJob(autoCategorizeJobId) : null,
+    {
+      enabled: !!autoCategorizeJobId,
+      refetchInterval: (data) => {
+        return autoCategorizeJobId && data?.status === 'running' ? 2000 : false
+      },
+      onSuccess: (job) => {
+        if (job && (job.status === 'completed' || job.status === 'failed')) {
+          setAutoCategorizeJobId(null)
+          qc.invalidateQueries(['clip-categories'])
+        }
+      }
+    }
+  )
+
+  const createMutation = useMutation(
+    () => categoryApi.createCategory(name, description, undefined, createCoverId), 
+    {
+      onSuccess: () => {
+        setName('')
+        setDescription('')
+        setCreateCoverId(undefined)
+        qc.invalidateQueries(['clip-categories'])
+      },
+    }
+  )
+
+  const deleteMutation = useMutation(
+    (id: number) => categoryApi.deleteCategory(id),
+    {
+      onSuccess: () => {
+        qc.invalidateQueries(['clip-categories'])
+      },
+    }
+  )
+
+  const bulkDeleteMutation = useMutation(
+    (categoryIds: number[]) => categoryApi.bulkDeleteCategories(categoryIds),
+    {
+      onSuccess: () => {
+        setSelectedCategories(new Set())
+        setBulkMode(false)
+        qc.invalidateQueries(['clip-categories'])
+      },
+      onError: (error: any) => {
+        console.error('Bulk delete failed:', error)
+        let errorMessage = 'Unknown error'
+        
+        if (error?.response?.data?.detail) {
+          errorMessage = error.response.data.detail
+        } else if (error?.response?.data?.message) {
+          errorMessage = error.response.data.message
+        } else if (error?.message) {
+          errorMessage = error.message
+        } else if (typeof error === 'string') {
+          errorMessage = error
+        } else {
+          errorMessage = `Network or server error: ${error?.response?.status || 'Unknown'}`
+        }
+        
+        alert(`Failed to delete categories: ${errorMessage}`)
+      }
+    }
+  )
+
+  const updateMutation = useMutation(
+    ({ id, updates }: { id: number; updates: { name?: string; description?: string; color?: string; cover_image_id?: number | null } }) =>
+      categoryApi.updateCategory(id, updates),
+    {
+      onSuccess: (result, variables) => {
+        console.log('Category update successful:', { result, variables })
+        setEditingCategory(null)
+        qc.invalidateQueries(['clip-categories'])
+      },
+      onError: (error: any) => {
+        console.error('Category update failed:', error)
+        let errorMessage = 'Unknown error'
+        
+        if (error?.response?.data?.detail) {
+          errorMessage = error.response.data.detail
+        } else if (error?.response?.data?.message) {
+          errorMessage = error.response.data.message
+        } else if (error?.message) {
+          errorMessage = error.message
+        } else if (typeof error === 'string') {
+          errorMessage = error
+        } else {
+          errorMessage = `Network or server error: ${error?.response?.status || 'Unknown'}`
+        }
+        
+        alert(`Failed to update category: ${errorMessage}`)
+      }
+    }
+  )
+
+  const autoCategorizeMutation = useMutation(categoryApi.autoCategorizeByFolders, {
+    onSuccess: (data) => {
+      setAutoCategorizeJobId(data.job_id)
+    },
+  })
+
+  const uploadImageMutation = useMutation(
+    (file: File) => {
+      console.log('Upload mutation executing with file:', file.name)
+      const formData = new FormData()
+      formData.append('file', file)
+      return imageApi.uploadImage(formData)
+    },
+    {
+      onSuccess: (result) => {
+        console.log('Upload mutation successful:', result)
+      },
+      onError: (error: any) => {
+        console.error('Image upload failed:', error)
+        alert('Failed to upload cover image. Please try again.')
+      }
+    }
+  )
+
+  // Live-apply UI preference toggles from Settings
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<any>).detail || {}
+      if (typeof detail.showAutoCategorize === 'boolean') {
+        setShowAutoCategorize(detail.showAutoCategorize)
+      }
+    }
+    window.addEventListener('ui-preferences', handler as any)
+    return () => window.removeEventListener('ui-preferences', handler as any)
+  }, [])
+
+  const handleEdit = (category: Category) => {
+    setEditingCategory(category)
+  }
+
+  const handleSaveEdit = () => {
+    if (!editingCategory) return
+    
+    console.log('Saving category edit:', {
+      id: editingCategory.id,
+      name: editingCategory.name,
+      description: editingCategory.description,
+      cover_image_id: editingCategory.cover_image_id
+    })
+    
+    updateMutation.mutate({
+      id: editingCategory.id,
+      updates: {
+        name: editingCategory.name,
+        description: editingCategory.description,
+        cover_image_id: editingCategory.cover_image_id
+      }
+    })
+  }
+
+  const handleDelete = (id: number, name: string) => {
+    if (confirm(`Are you sure you want to delete the category "${name}"?`)) {
+      deleteMutation.mutate(id)
+    }
+  }
+
+  const toggleCategorySelection = (categoryId: number, event?: React.MouseEvent) => {
+    if (!categories) return
+
+    const categoryIndex = categories.findIndex(c => c.id === categoryId)
+    
+    if (event?.shiftKey && lastSelectedIndex !== null) {
+      // Range selection: select all items between last clicked and current
+      const startIndex = Math.min(lastSelectedIndex, categoryIndex)
+      const endIndex = Math.max(lastSelectedIndex, categoryIndex)
+      
+      setSelectedCategories(prev => {
+        const newSet = new Set(prev)
+        for (let i = startIndex; i <= endIndex; i++) {
+          newSet.add(categories[i].id)
+        }
+        return newSet
+      })
+    } else {
+      // Single selection: toggle the clicked item
+      setSelectedCategories(prev => {
+        const newSet = new Set(prev)
+        if (newSet.has(categoryId)) {
+          newSet.delete(categoryId)
+        } else {
+          newSet.add(categoryId)
+        }
+        return newSet
+      })
+      setLastSelectedIndex(categoryIndex)
+    }
+  }
+
+  const selectAllCategories = () => {
+    if (categories) {
+      setSelectedCategories(new Set(categories.map(c => c.id)))
+    }
+  }
+
+  const clearSelection = () => {
+    setSelectedCategories(new Set())
+  }
+
+  const handleBulkDelete = () => {
+    const selectedIds = Array.from(selectedCategories)
+    if (selectedIds.length === 0) return
+    
+    const categoryNames = categories
+      ?.filter(c => selectedIds.includes(c.id))
+      .map(c => c.name)
+      .slice(0, 3)
+      .join(', ')
+    
+    const displayNames = categoryNames + (selectedIds.length > 3 ? ` and ${selectedIds.length - 3} more` : '')
+    
+    if (confirm(`Are you sure you want to delete ${selectedIds.length} categories: ${displayNames}?`)) {
+      bulkDeleteMutation.mutate(selectedIds)
+    }
+  }
+
+  const handleCoverUpload = async (file: File, mode: 'create' | 'edit') => {
+    try {
+      // Validate file size on frontend (10MB limit)
+      const maxSize = 10 * 1024 * 1024 // 10MB
+      if (file.size > maxSize) {
+        alert(`File is too large. Maximum size is ${maxSize / (1024 * 1024)}MB. Your file is ${(file.size / (1024 * 1024)).toFixed(2)}MB.`)
+        return
+      }
+      
+      // Validate file type
+      const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']
+      if (!allowedTypes.includes(file.type)) {
+        alert('Invalid file type. Only JPEG, PNG, GIF, and WebP images are allowed.')
+        return
+      }
+      
+      console.log('Starting cover upload:', { fileName: file.name, size: file.size, mode })
+      const uploadResult = await uploadImageMutation.mutateAsync(file)
+      console.log('Upload result:', uploadResult)
+      
+      if (mode === 'create') {
+        console.log('Setting createCoverId to:', uploadResult.id)
+        setCreateCoverId(uploadResult.id)
+      } else if (mode === 'edit' && editingCategory) {
+        console.log('Updating editingCategory cover_image_id from', editingCategory.cover_image_id, 'to', uploadResult.id)
+        setEditingCategory({
+          ...editingCategory,
+          cover_image_id: uploadResult.id
+        })
+      }
+    } catch (error) {
+      console.error('Cover upload failed:', error)
+    }
+  }
+
+  return (
+    <div className="p-4 sm:p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Clip Categories</h2>
+          <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+            Organize your clips into categories for easy browsing
+          </p>
+        </div>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={() => setBulkMode(!bulkMode)}
+            className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+              bulkMode
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
+            }`}
+          >
+            {bulkMode ? 'Exit Bulk Mode' : 'Bulk Select'}
+          </button>
+          {showAutoCategorize && (
+            <button
+              onClick={() => autoCategorizeMutation.mutate()}
+              disabled={autoCategorizeMutation.isLoading}
+              className="px-4 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
+              title="Auto-create categories from folder structure"
+            >
+              {autoCategorizeMutation.isLoading ? 'Processing...' : '📁 Auto-Categorize Folders'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Auto-Categorization Progress */}
+      {autoCategorizeJob && autoCategorizeJob.status === 'running' && (
+        <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center space-x-3">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+              <span className="text-sm font-medium text-blue-900 dark:text-blue-200">
+                Auto-categorizing clips...
+              </span>
+            </div>
+            <span className="text-sm text-blue-700 dark:text-blue-300">
+              {autoCategorizeJob.processed_items || 0} of {autoCategorizeJob.total_items || 0}
+            </span>
+          </div>
+          <div className="w-full bg-blue-200 dark:bg-blue-800 rounded-full h-2">
+            <div 
+              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${Math.min(autoCategorizeJob.progress || 0, 100)}%` }}
+            ></div>
+          </div>
+          <div className="text-xs text-blue-600 dark:text-blue-400 mt-2">
+            Progress: {autoCategorizeJob.progress || 0}%
+          </div>
+        </div>
+      )}
+
+      {/* Auto-Categorization Results */}
+      {autoCategorizeJob && autoCategorizeJob.status === 'completed' && autoCategorizeJob.result && (
+        <div className="bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-700 rounded-lg p-4">
+          <div className="flex items-center space-x-2 mb-2">
+            <span className="text-green-600 dark:text-green-400">✓</span>
+            <span className="text-sm font-medium text-green-900 dark:text-green-200">
+              Auto-categorization completed!
+            </span>
+          </div>
+          <div className="text-xs text-green-700 dark:text-green-300">
+            Processed: {autoCategorizeJob.result.total_processed || 0}, 
+            Categorized: {autoCategorizeJob.result.categorized || 0}, 
+            Errors: {autoCategorizeJob.result.errors || 0}
+          </div>
+        </div>
+      )}
+
+      {/* Auto-Categorization Error */}
+      {autoCategorizeJob && autoCategorizeJob.status === 'failed' && (
+        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg p-4">
+          <div className="flex items-center space-x-2 mb-2">
+            <span className="text-red-600 dark:text-red-400">✗</span>
+            <span className="text-sm font-medium text-red-900 dark:text-red-200">
+              Auto-categorization failed
+            </span>
+          </div>
+          {autoCategorizeJob.error_message && (
+            <div className="text-xs text-red-700 dark:text-red-300">
+              {autoCategorizeJob.error_message}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Create New Category */}
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+        <h3 className="text-md font-medium text-gray-900 dark:text-white mb-3">Create New Clip Category</h3>
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Category name"
+              className="px-3 py-2 rounded-md bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm text-gray-900 dark:text-white"
+            />
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Description (optional)"
+              className="px-3 py-2 rounded-md bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm text-gray-900 dark:text-white"
+            />
+            <div className="flex items-center space-x-2">
+              <label className="px-3 py-2 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 cursor-pointer">
+                {createCoverId ? 'Change Cover Image' : 'Upload Cover Image'}
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) {
+                      handleCoverUpload(file, 'create')
+                    }
+                  }}
+                />
+              </label>
+              {createCoverId && (
+                <div className="w-16 h-16 rounded overflow-hidden bg-gray-200 dark:bg-gray-700">
+                  <img src={`/api/images/file/${createCoverId}`} className="w-full h-full object-cover" />
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center justify-between">
+            <div></div>
+            <button
+              onClick={() => createMutation.mutate()}
+              className="px-4 py-2 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-60"
+              disabled={!name || createMutation.isLoading}
+            >
+              {createMutation.isLoading ? 'Creating...' : 'Create Category'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Bulk Controls */}
+      {bulkMode && (
+        <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <span className="text-sm font-medium text-blue-900 dark:text-blue-200">
+                {selectedCategories.size} categories selected
+              </span>
+              <div className="flex space-x-2">
+                <button
+                  onClick={selectAllCategories}
+                  className="px-3 py-1 text-sm text-blue-700 hover:text-blue-800 dark:text-blue-300 dark:hover:text-blue-200"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={clearSelection}
+                  className="px-3 py-1 text-sm text-blue-700 hover:text-blue-800 dark:text-blue-300 dark:hover:text-blue-200"
+                >
+                  Clear Selection
+                </button>
+              </div>
+            </div>
+            <button
+              onClick={handleBulkDelete}
+              disabled={selectedCategories.size === 0 || bulkDeleteMutation.isLoading}
+              className="px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {bulkDeleteMutation.isLoading ? 'Deleting...' : `Delete Selected (${selectedCategories.size})`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Sort Controls */}
+      <div className="flex items-center space-x-4">
+        <span className="text-sm text-gray-600 dark:text-gray-400">Sort by:</span>
+        <button
+          onClick={() => setSortBy('name')}
+          className={`px-3 py-1 rounded text-sm ${
+            sortBy === 'name' 
+              ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300' 
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+          }`}
+        >
+          Name
+        </button>
+        <button
+          onClick={() => setSortBy('image_count')}
+          className={`px-3 py-1 rounded text-sm ${
+            sortBy === 'image_count'
+              ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
+          }`}
+        >
+          Clip Count
+        </button>
+      </div>
+
+      {/* Categories List */}
+      {isLoading ? (
+        <div className="text-center py-8 text-gray-500">Loading clip categories...</div>
+      ) : !categories || categories.length === 0 ? (
+        <div className="text-center py-8">
+          <div className="text-gray-500 dark:text-gray-400 mb-2">No clip categories found</div>
+          <p className="text-sm text-gray-400 dark:text-gray-500">
+            Create a category above or use "Auto-Categorize Folders" to get started
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {categories.map((category) => (
+                  <CategoryCard 
+                    key={category.id} 
+                    category={category} 
+                    bulkMode={bulkMode}
+                    selectedCategories={selectedCategories}
+                    editingCategory={editingCategory}
+                    onToggleSelection={toggleCategorySelection}
+                    onEdit={handleEdit}
+                    onDelete={handleDelete}
+                    onSaveEdit={handleSaveEdit}
+                    onCancelEdit={() => setEditingCategory(null)}
+                    setEditingCategory={setEditingCategory}
+                    updateMutation={updateMutation}
+                    isFeatured={false}
+                    onCoverUpload={handleCoverUpload}
+                  />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// CategoryCard Component
+function CategoryCard({
+  category,
+  bulkMode,
+  selectedCategories,
+  editingCategory,
+  onToggleSelection,
+  onEdit,
+  onDelete,
+  onSaveEdit,
+  onCancelEdit,
+  setEditingCategory,
+  updateMutation,
+  isFeatured,
+  onCoverUpload
+}: {
+  category: Category
+  bulkMode: boolean
+  selectedCategories: Set<number>
+  editingCategory: Category | null
+  onToggleSelection: (categoryId: number, event?: React.MouseEvent) => void
+  onEdit: (category: Category) => void
+  onDelete: (id: number, name: string) => void
+  onSaveEdit: () => void
+  onCancelEdit: () => void
+  setEditingCategory: (category: Category) => void
+  updateMutation: any
+  isFeatured: boolean
+  onCoverUpload: (file: File, mode: 'create' | 'edit') => Promise<void>
+}) {
+  return (
+    <>
+    <div
+      className={`bg-white dark:bg-gray-800 rounded-lg border p-0 overflow-hidden transition-all ${
+        bulkMode ? 'cursor-pointer hover:shadow-lg' : 'hover:shadow-md'
+      } ${
+        bulkMode && selectedCategories.has(category.id)
+          ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 shadow-md'
+          : 'border-gray-200 dark:border-gray-700'
+      }`}
+      onClick={bulkMode ? (e) => onToggleSelection(category.id, e) : undefined}
+    >
+      {/* Large cover at the top of the card, flush edge-to-edge */}
+      <div className="w-full h-44 bg-gray-200 dark:bg-gray-700">
+        {category.cover_image_id ? (
+          <img
+            src={`/api/images/file/${category.cover_image_id}`}
+            alt={category.name}
+            className="block w-full h-full object-cover"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-xs text-gray-500">
+            No cover
+          </div>
+        )}
+      </div>
+      <div className="p-4">
+              {editingCategory?.id === category.id ? (
+                // Edit Mode
+                <div className="space-y-3">
+                  <input
+                    value={editingCategory.name}
+                    onChange={(e) => setEditingCategory({...editingCategory, name: e.target.value})}
+                    className="w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                  />
+                  <textarea
+                    value={editingCategory.description || ''}
+                    onChange={(e) => setEditingCategory({...editingCategory, description: e.target.value})}
+                    placeholder="Description"
+                    rows={2}
+                    className="w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm resize-none"
+                  />
+                  <div className="flex items-center space-x-2">
+                    <label className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 cursor-pointer">
+                      Upload Cover Image
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          if (file) {
+                            onCoverUpload(file, 'edit')
+                          }
+                        }}
+                      />
+                    </label>
+                    {editingCategory.cover_image_id && (
+                      <button
+                        onClick={() => updateMutation.mutate({ id: editingCategory.id, updates: { cover_image_id: null } })}
+                        disabled={updateMutation.isLoading}
+                        className="px-3 py-1 bg-gray-500 text-white text-xs rounded hover:bg-gray-600 disabled:opacity-50"
+                      >
+                        Clear Cover
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={onSaveEdit}
+                      disabled={updateMutation.isLoading}
+                      className="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={onCancelEdit}
+                      className="px-3 py-1 bg-gray-500 text-white text-xs rounded hover:bg-gray-600"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                // View Mode
+                <>
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="flex items-center space-x-3">
+                    {bulkMode && (
+                        <input
+                          type="checkbox"
+                          checked={selectedCategories.has(category.id)}
+                          onChange={(e) => {
+                            e.stopPropagation()
+                            onToggleSelection(category.id, e as any)
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
+                        />
+                      )}
+                    </div>
+                    {!bulkMode && (
+                      <div className="flex space-x-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onEdit(category)
+                          }}
+                          className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                          title="Edit category"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onDelete(category.id, category.name)
+                          }}
+                          className="p-1 text-red-400 hover:text-red-600"
+                          title="Delete category"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {bulkMode ? (
+                    <div className="block p-1 -m-1">
+                      <h3 className="font-medium text-gray-900 dark:text-white mb-1">
+                        {category.name}
+                      </h3>
+                      {category.description && (
+                        <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                          {category.description}
+                        </p>
+                      )}
+                      <div className="text-sm text-gray-500">
+                        {category.image_count} {category.image_count === 1 ? 'clip' : 'clips'}
+                      </div>
+                    </div>
+                  ) : (
+                    <Link
+                      to={`/clips?categories=${encodeURIComponent(category.name)}`}
+                      className="block hover:bg-gray-50 dark:hover:bg-gray-700 rounded p-1 -m-1 transition-colors"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <h3 className="font-medium text-gray-900 dark:text-white mb-1">
+                        {category.name}
+                      </h3>
+                      {category.description && (
+                        <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                          {category.description}
+                        </p>
+                      )}
+                      <div className="text-sm text-gray-500">
+                        {category.image_count} {category.image_count === 1 ? 'clip' : 'clips'}
+                      </div>
+                    </Link>
+                  )}
+                </>
+              )}
+      </div>
+    </div>
+    </>
+  )
+}

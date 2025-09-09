@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from backend.models import Image, Job, Category
+from sqlalchemy import text
 from backend.services.metadata_extractor import MetadataExtractor
 from backend.services.thumbnail_generator import ThumbnailGenerator
 from backend.services.media_manager import MediaManager
@@ -19,11 +20,23 @@ class ImageScanner:
         self.metadata_extractor = MetadataExtractor()
         self.thumbnail_generator = ThumbnailGenerator()
         self.media_manager = MediaManager()
-        self.supported_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp'}
+        self.supported_extensions = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp', '.gif', '.mp4', '.webm', '.mov', '.avi'}
+        # Patterns to exclude from scanning (Synology NAS thumbnails, etc.)
+        self.exclude_patterns = {
+            '@eaDir',           # Synology metadata directory
+            'SYNOFILE_THUMB',   # Synology thumbnail files
+            '.DS_Store',        # macOS metadata
+            'Thumbs.db',        # Windows thumbnails
+            '.thumbnails',      # Linux thumbnails
+            '@tmp',             # Synology temp directory
+        }
     
-    def scan_library(self, db: Session, job_id: Optional[int] = None):
-        """Scan all configured library paths for images"""
-        library_paths = self._get_library_paths()
+    def scan_library(self, db: Session, job_id: Optional[int] = None, library_paths: Optional[List[str]] = None, media_filter: Optional[str] = None):
+        """Scan library paths for media.
+        - library_paths: scan only these paths (defaults to LIBRARY_PATHS)
+        - media_filter: 'image' or 'video' to restrict extensions
+        """
+        library_paths = library_paths or self._get_library_paths()
         
         if job_id:
             job = db.query(Job).filter(Job.id == job_id).first()
@@ -35,10 +48,10 @@ class ImageScanner:
         try:
             all_image_paths = []
             
-            # Collect all image files
+            # Collect all media files
             for library_path in library_paths:
                 if os.path.exists(library_path):
-                    image_paths = self._scan_directory(library_path)
+                    image_paths = self._scan_directory(library_path, media_filter=media_filter)
                     all_image_paths.extend(image_paths)
             
             if job_id:
@@ -69,6 +82,11 @@ class ImageScanner:
                 except Exception as e:
                     import logging
                     logging.error(f"Error processing {image_path}: {e}")
+                    # Ensure broken transactions don't poison subsequent queries
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
                     continue
             
             # Clean up orphaned records
@@ -99,16 +117,34 @@ class ImageScanner:
         library_paths_str = os.getenv('LIBRARY_PATHS', '/library')
         return [path.strip() for path in library_paths_str.split(',')]
     
-    def _scan_directory(self, directory: str) -> List[str]:
-        """Recursively scan directory for image files"""
+    def _scan_directory(self, directory: str, media_filter: Optional[str] = None) -> List[str]:
+        """Recursively scan directory for media files (optionally filtered to images or videos)"""
         image_paths = []
+        video_exts = {'.mp4', '.webm', '.mov', '.avi', '.m4v'}
+        if media_filter == 'video':
+            allowed_exts = video_exts
+        elif media_filter == 'image':
+            allowed_exts = {e for e in self.supported_extensions if e not in video_exts}
+        else:
+            allowed_exts = self.supported_extensions
         
         for root, dirs, files in os.walk(directory):
+            # Skip excluded directories
+            dirs[:] = [d for d in dirs if not any(pattern in d for pattern in self.exclude_patterns)]
+            
+            # Skip if current path contains excluded patterns
+            if any(pattern in root for pattern in self.exclude_patterns):
+                continue
+                
             for file in files:
+                # Skip excluded files
+                if any(pattern in file for pattern in self.exclude_patterns):
+                    continue
+                    
                 file_path = os.path.join(root, file)
                 file_ext = os.path.splitext(file)[1].lower()
                 
-                if file_ext in self.supported_extensions:
+                if file_ext in allowed_exts:
                     image_paths.append(file_path)
         
         return image_paths
@@ -220,6 +256,15 @@ class ImageScanner:
         """Extract category names from folder structure"""
         # Get library paths to determine relative path
         library_paths = self._get_library_paths()
+
+        # Normalize known host paths to container mount points
+        # This allows categorization to work even if DB stored host paths
+        host_gif = '/volume1/homes/rheritage/Spicy Gif Library'
+        host_clip = '/volume1/homes/rheritage/Spicy Clip Library'
+        if image_path.startswith(host_gif):
+            image_path = image_path.replace(host_gif, '/library', 1)
+        elif image_path.startswith(host_clip):
+            image_path = image_path.replace(host_clip, '/clips', 1)
         
         # Find which library path this image belongs to
         relative_path = None
@@ -259,28 +304,69 @@ class ImageScanner:
         if not category_names:
             return
         
+        # Determine media type of this item
+        ext = os.path.splitext(image.filename)[1].lower() if image.filename else ''
+        video_exts = {'.mp4', '.webm', '.mov', '.avi', '.m4v'}
+        media_type = 'video' if ext in video_exts else 'image'
+
         # Create categories if they don't exist and assign to image
         for category_name in category_names:
-            category = db.query(Category).filter(Category.name == category_name).first()
-            if not category:
-                # Create new category with folder-based color
-                colors = ["#EF4444", "#F59E0B", "#10B981", "#3B82F6", "#8B5CF6", "#EC4899", "#F97316", "#84CC16"]
-                color = colors[hash(category_name) % len(colors)]
-                
-                category = Category(
-                    name=category_name,
-                    description=f"Auto-generated from folder: {category_name}",
-                    color=color
-                )
-                db.add(category)
-                db.flush()
-            
-            # Assign category to image if not already assigned
-            if category not in image.categories:
-                image.categories.append(category)
+            category_id = None
+            # When media_type column may be missing, differentiate video categories
+            # by renaming them with a suffix to avoid name collisions with GIF categories
+            name_fallback = category_name + " (Clips)" if media_type == 'video' else category_name
+            # Preferred path: ORM with media_type
+            try:
+                category = db.query(Category).filter(Category.name == category_name, Category.media_type == media_type).first()
+                if not category:
+                    colors = ["#EF4444", "#F59E0B", "#10B981", "#3B82F6", "#8B5CF6", "#EC4899", "#F97316", "#84CC16"]
+                    color = colors[hash(category_name) % len(colors)]
+                    category = Category(name=category_name, description=f"Auto-generated from folder: {category_name}", color=color, media_type=media_type)
+                    db.add(category)
+                    db.flush()
+                category_id = category.id
+            except Exception:
+                # Fallback path during migration: raw SQL upsert by name only
+                try:
+                    db.rollback()
+                    upsert_sql = text("""
+                        INSERT INTO categories (name, description)
+                        VALUES (:name, :desc)
+                        ON CONFLICT (name) DO NOTHING
+                        RETURNING id
+                    """)
+                    # For videos, use suffixed name to differentiate when media_type is unavailable
+                    sel_name = name_fallback
+                    res = db.execute(upsert_sql, {"name": sel_name, "desc": f"Auto-generated from folder: {category_name}"})
+                    row = res.fetchone()
+                    if row and row[0]:
+                        category_id = row[0]
+                    else:
+                        sel = db.execute(text("SELECT id FROM categories WHERE name = :name"), {"name": sel_name}).fetchone()
+                        category_id = sel[0] if sel else None
+                except Exception:
+                    db.rollback()
+                    category_id = None
+
+            # Assign via association table directly to avoid touching ORM relationship
+            if category_id:
+                try:
+                    db.execute(text("""
+                        INSERT INTO image_categories (image_id, category_id)
+                        VALUES (:iid, :cid)
+                        ON CONFLICT DO NOTHING
+                    """), {"iid": image.id, "cid": category_id})
+                    db.commit()
+                except Exception:
+                    db.rollback()
     
     def _cleanup_orphaned_images(self, db: Session) -> int:
         """Remove database records for images that no longer exist on disk"""
+        # Ensure we're not in a failed transaction state
+        try:
+            db.rollback()
+        except Exception:
+            pass
         images = db.query(Image).all()
         orphaned_count = 0
         

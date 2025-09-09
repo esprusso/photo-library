@@ -16,17 +16,9 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: false,
-    minify: false,
-    target: 'es2015',
-    rollupOptions: {
-      output: {
-        format: 'es',
-        manualChunks: undefined
-      }
-    }
+    target: 'es2018'
   },
-  optimizeDeps: {
-    force: true
+  esbuild: {
+    logOverride: { 'this-is-undefined-in-esm': 'silent' }
   }
 })

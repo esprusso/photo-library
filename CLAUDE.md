@@ -80,10 +80,10 @@ Configure in `.env` file:
 
 ## API Endpoints
 
-- Frontend: http://localhost:8080
-- Backend API: http://localhost:8000
-- API Documentation: http://localhost:8000/docs
-- Health Check: http://localhost:8000/health
+- Frontend: http://localhost:8087
+- Backend API (Docker via proxy): http://localhost:8087/api
+- API Documentation: http://localhost:8087/api/docs
+- Health Check: http://localhost:8087/api/health
 
 Key routes:
 - `GET /images` - List photos with filtering/pagination

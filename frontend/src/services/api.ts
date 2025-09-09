@@ -3,8 +3,48 @@ import { Image, Tag, Category, Job, ImageFilters, SortOptions, LibraryStats } fr
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 10000, // Reduce timeout from 30s to 10s to fail faster
 })
+
+const API_DEBUG = (import.meta as any)?.env?.VITE_API_DEBUG === 'true'
+
+// Add request interceptor for debugging
+api.interceptors.request.use(
+  (config) => {
+    if (API_DEBUG) console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`)
+    return config
+  },
+  (error) => {
+    if (API_DEBUG) console.error('API Request Error:', error)
+    return Promise.reject(error)
+  }
+)
+
+// Add response interceptor for debugging
+api.interceptors.response.use(
+  (response) => {
+    if (API_DEBUG) console.log(`API Response: ${response.config.method?.toUpperCase()} ${response.config.url} - ${response.status}`)
+    return response
+  },
+  (error) => {
+    if (API_DEBUG) {
+      console.error(`API Error: ${error.config?.method?.toUpperCase()} ${error.config?.url}`)
+      console.error('Error details:', error.message)
+    }
+    
+    if (API_DEBUG) {
+      if (error.code === 'ECONNABORTED') {
+        console.error('Request timed out - backend may not be running or responding')
+      } else if (error.response?.status === 404) {
+        console.error('API endpoint not found')
+      } else if (error.response?.status >= 500) {
+        console.error('Server error - check backend logs')
+      }
+    }
+    
+    return Promise.reject(error)
+  }
+)
 
 export const imageApi = {
   // Get images with filtering and pagination
@@ -28,6 +68,10 @@ export const imageApi = {
     if (filters.favorite !== undefined) params.append('favorite', filters.favorite.toString())
     if (filters.rating !== undefined) params.append('rating', filters.rating.toString())
     if (filters.model_name) params.append('model_name', filters.model_name)
+    if (filters.file_format) params.append('file_format', filters.file_format)
+    if (filters.exclude_jpg !== undefined) params.append('exclude_jpg', filters.exclude_jpg.toString())
+    if (filters.exclude_static !== undefined) params.append('exclude_static', filters.exclude_static.toString())
+    if (filters.media) params.append('media', filters.media)
 
     const { data } = await api.get(`/images/?${params}`)
     return data
@@ -37,9 +81,13 @@ export const imageApi = {
     const { data } = await api.delete(`/images/${id}?delete_original=${deleteOriginal}`)
     return data
   },
-  // Get a random image
-  getRandom: async (): Promise<Image> => {
-    const { data } = await api.get('/images/random')
+  // Get a random image, optional media filter ('gif' | 'video' | 'image') and unrated filter
+  getRandom: async (media?: 'gif' | 'video' | 'image', unrated?: boolean): Promise<Image> => {
+    const params = new URLSearchParams()
+    if (media) params.append('media', media)
+    if (unrated) params.append('unrated', 'true')
+    const url = params.toString() ? `/images/random?${params}` : '/images/random'
+    const { data } = await api.get(url)
     return data
   },
 
@@ -86,6 +134,13 @@ export const imageApi = {
     label: string
   }>> => {
     const { data } = await api.get(`/images/search/suggestions?query=${encodeURIComponent(query)}&limit=${limit}`)
+    return data
+  },
+
+  // Upload an image file
+  uploadImage: async (formData: FormData): Promise<{ id: number; filename: string }> => {
+    // Do not set Content-Type manually; let the browser add proper multipart boundaries
+    const { data } = await api.post('/images/upload', formData)
     return data
   }
 }
@@ -143,22 +198,26 @@ export const tagApi = {
 
 export const categoryApi = {
   // Get all categories
-  getCategories: async (search?: string, sortBy: string = 'name'): Promise<Category[]> => {
+  getCategories: async (search?: string, sortBy: string = 'name', media?: 'image' | 'video'): Promise<Category[]> => {
     const params = new URLSearchParams({ sort_by: sortBy })
     if (search) params.append('search', search)
+    if (media) params.append('media', media)
     
     const { data } = await api.get(`/categories/?${params}`)
     return data
   },
 
-  // Create category
-  createCategory: async (name: string, description?: string, color?: string): Promise<Category> => {
-    const { data } = await api.post('/categories/', { name, description, color })
+  // Create category (color deprecated; supports optional cover_image_id)
+  createCategory: async (name: string, description?: string, color?: string, cover_image_id?: number): Promise<Category> => {
+    const payload: any = { name, description }
+    if (color) payload.color = color
+    if (cover_image_id !== undefined) payload.cover_image_id = cover_image_id
+    const { data } = await api.post('/categories/', payload)
     return data
   },
 
   // Update category
-  updateCategory: async (id: number, updates: { name?: string; description?: string; color?: string }): Promise<Category> => {
+  updateCategory: async (id: number, updates: { name?: string; description?: string; color?: string; cover_image_id?: number | null }): Promise<Category> => {
     const { data } = await api.put(`/categories/${id}`, updates)
     return data
   },
@@ -182,6 +241,16 @@ export const categoryApi = {
     return data
   },
 
+  // Set/clear category cover
+  setCover: async (categoryId: number, imageId: number): Promise<{ message: string; cover_image_id: number; cover_image_url: string }> => {
+    const { data } = await api.post(`/categories/${categoryId}/cover/${imageId}`)
+    return data
+  },
+  clearCover: async (categoryId: number): Promise<{ message: string }> => {
+    const { data } = await api.delete(`/categories/${categoryId}/cover`)
+    return data
+  },
+
   // Remove images from category
   removeImagesFromCategory: async (categoryId: number, imageIds: number[]): Promise<{ message: string }> => {
     const { data } = await api.delete(`/categories/${categoryId}/images`, { data: imageIds })
@@ -189,7 +258,7 @@ export const categoryApi = {
   },
 
   // Auto-categorize based on folder structure
-  autoCategorizeByFolders: async (): Promise<{ message: string }> => {
+  autoCategorizeByFolders: async (): Promise<{ job_id: number; message: string }> => {
     const { data } = await api.post('/categories/auto-categorize-folders')
     return data
   },
@@ -229,10 +298,19 @@ export const jobApi = {
     const { data } = await api.post('/jobs/indexing')
     return data
   },
+  // Start indexing clips job
+  startIndexingClips: async (): Promise<{ message: string; job_id: number }> => {
+    const { data } = await api.post('/jobs/indexing-clips')
+    return data
+  },
 
   // Start thumbnail job
   startThumbnails: async (forceRegenerate: boolean = false): Promise<{ message: string; job_id: number }> => {
     const { data } = await api.post('/jobs/thumbnails', { force_regenerate: forceRegenerate })
+    return data
+  },
+  startClipThumbnails: async (forceRegenerate: boolean = false): Promise<{ message: string; job_id: number }> => {
+    const { data } = await api.post('/jobs/thumbnails', { force_regenerate: forceRegenerate, only_videos: true })
     return data
   },
 
@@ -271,6 +349,25 @@ export const libraryApi = {
   // Get health status
   getHealth: async (): Promise<{ status: string }> => {
     const { data } = await api.get('/health')
+    return data
+  },
+
+  // Test API connectivity (fast endpoint for debugging)
+  testConnection: async (): Promise<{ message: string; version: string }> => {
+    const { data } = await api.get('/health')
+    return data
+  }
+}
+
+export const duplicateApi = {
+  // Find duplicate groups (default GIFs)
+  getDuplicates: async (media: 'gif' | 'video' | 'image' = 'gif'): Promise<Array<{ key: string, count: number, items: { id: number, filename: string, file_size?: number, thumbnail_path: string, width?: number, height?: number, created_at?: string }[] }>> => {
+    const { data } = await api.get(`/images/duplicates?media=${media}`)
+    return data
+  },
+  // Merge duplicates: keep one, remove others
+  merge: async (keepId: number, removeIds: number[], deleteOriginals: boolean = false): Promise<{ message: string }> => {
+    const { data } = await api.post('/images/duplicates/merge', { keep_id: keepId, remove_ids: removeIds, delete_originals: deleteOriginals })
     return data
   }
 }

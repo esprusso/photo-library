@@ -1,17 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from 'react-query'
-import { imageApi, categoryApi } from '../services/api'
-import type { Image } from '../types'
+import { imageApi, tagApi, categoryApi } from '../services/api'
+import CreatableSelect from 'react-select/creatable'
+import type { Image, Category } from '../types'
 import StarRating from './StarRating'
 import FavoriteButton from './FavoriteButton'
 
 interface ImageModalProps {
   imageId: number | null
   onClose: () => void
+  onNavigate?: (direction: 'prev' | 'next') => void
 }
 
-export default function ImageModal({ imageId, onClose }: ImageModalProps) {
+export default function ImageModal({ imageId, onClose, onNavigate }: ImageModalProps) {
   const [isClosing, setIsClosing] = useState(false)
+  const [showDetails, setShowDetails] = useState(false)
+  const [isTransitioning, setIsTransitioning] = useState(false)
+  const [touchStart, setTouchStart] = useState(0)
+  const [touchEnd, setTouchEnd] = useState(0)
   const queryClient = useQueryClient()
 
   const { data: image, isLoading } = useQuery(
@@ -22,9 +28,6 @@ export default function ImageModal({ imageId, onClose }: ImageModalProps) {
     }
   )
 
-  // Categories query for future use
-  // const { data: categories } = useQuery('categories', () => categoryApi.getCategories())
-
   const favoriteMutation = useMutation(
     (id: number) => imageApi.toggleFavorite(id),
     {
@@ -32,14 +35,12 @@ export default function ImageModal({ imageId, onClose }: ImageModalProps) {
         queryClient.setQueryData(['image', imageId], (old: any) => 
           old ? { ...old, favorite: data.favorite } : old
         )
-        queryClient.invalidateQueries(['images'])
-      },
-      onError: (error) => {
-        console.error('Failed to toggle favorite:', error)
+        // Notify browse grid to update in place (avoid full refetch)
+        window.dispatchEvent(new CustomEvent('image-updated', { detail: { id: imageId, favorite: data.favorite } }))
       }
     }
   )
-
+  
   const ratingMutation = useMutation(
     ({ id, rating }: { id: number; rating: number }) => imageApi.setRating(id, rating),
     {
@@ -47,127 +48,521 @@ export default function ImageModal({ imageId, onClose }: ImageModalProps) {
         queryClient.setQueryData(['image', imageId], (old: any) => 
           old ? { ...old, rating: data.rating } : old
         )
-        queryClient.invalidateQueries(['images'])
-      },
-      onError: (error) => {
-        console.error('Failed to set rating:', error)
+        // Notify browse grid to update in place (avoid full refetch)
+        window.dispatchEvent(new CustomEvent('image-updated', { detail: { id: imageId, rating: data.rating } }))
       }
     }
   )
 
-  // Handle escape key
+
+  // Handle navigation with transitions
+  const navigateWithTransition = (direction: 'prev' | 'next') => {
+    if (!onNavigate || isTransitioning) return
+    setIsTransitioning(true)
+    onNavigate(direction)
+    // Reset transition state after animation completes
+    setTimeout(() => setIsTransitioning(false), 300)
+  }
+
+  // Handle touch gestures for swipe navigation
+  const handleTouchStart = (e: React.TouchEvent) => {
+    // Don't handle swipes on video elements or their controls
+    const target = e.target as HTMLElement
+    if (target?.tagName?.toLowerCase() === 'video' || target?.closest('video')) {
+      return
+    }
+    setTouchEnd(0) // Reset end position
+    setTouchStart(e.targetTouches[0].clientX)
+  }
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    // Don't handle swipes on video elements
+    const target = e.target as HTMLElement
+    if (target?.tagName?.toLowerCase() === 'video' || target?.closest('video')) {
+      return
+    }
+    setTouchEnd(e.targetTouches[0].clientX)
+  }
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    // Don't handle swipes on video elements
+    const target = e.target as HTMLElement
+    if (target?.tagName?.toLowerCase() === 'video' || target?.closest('video')) {
+      return
+    }
+    if (!touchStart || !touchEnd) return
+    const distance = touchStart - touchEnd
+    const isLeftSwipe = distance > 50
+    const isRightSwipe = distance < -50
+
+    if (isLeftSwipe) {
+      navigateWithTransition('next') // Swipe left = go forward
+    } else if (isRightSwipe) {
+      navigateWithTransition('prev') // Swipe right = go back
+    }
+  }
+
+  // Handle keyboard navigation
   useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
+    const handleKeyboard = (e: KeyboardEvent) => {
+      // Ignore when typing into inputs or selects inside the modal
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName?.toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable) {
+        return
+      }
+
       if (e.key === 'Escape') {
         handleClose()
+      } else if (e.key === 'ArrowLeft' && onNavigate) {
+        navigateWithTransition('prev')
+      } else if (e.key === 'ArrowRight' && onNavigate) {
+        navigateWithTransition('next')
+      } else if (imageId) {
+        // Numeric rating shortcuts: 1-5 set star rating
+        // Support both top-row digits and numpad (e.key), keep simple
+        const key = e.key
+        const map: Record<string, number> = { '1': 1, '2': 2, '3': 3, '4': 4, '5': 5 }
+        if (key in map) {
+          e.preventDefault()
+          ratingMutation.mutate({ id: imageId, rating: map[key] })
+        }
       }
     }
 
     if (imageId) {
-      document.addEventListener('keydown', handleEscape)
-      document.body.style.overflow = 'hidden' // Prevent background scrolling
+      document.addEventListener('keydown', handleKeyboard)
+      document.body.style.overflow = 'hidden'
     }
 
     return () => {
-      document.removeEventListener('keydown', handleEscape)
+      document.removeEventListener('keydown', handleKeyboard)
       document.body.style.overflow = 'unset'
     }
-  }, [imageId])
+  }, [imageId, onNavigate, ratingMutation])
 
   const handleClose = () => {
     setIsClosing(true)
     setTimeout(() => {
       onClose()
       setIsClosing(false)
-    }, 200) // Match animation duration
+    }, 200)
   }
+
+  // Close modal after deletion
+  useEffect(() => {
+    const handler = () => handleClose()
+    window.addEventListener('ai-image-deleted', handler as any)
+    return () => window.removeEventListener('ai-image-deleted', handler as any)
+  }, [])
 
   if (!imageId) return null
 
   return (
-    <div 
-      className={`fixed inset-0 z-50 bg-black/80 backdrop-blur-sm transition-opacity duration-200 ${
-        isClosing ? 'opacity-0' : 'opacity-100'
-      }`}
-      onClick={handleClose}
-    >
-      <div className="absolute inset-4 flex">
-        {/* Main image area */}
-        <div 
-          className={`flex-1 flex items-center justify-center transition-transform duration-200 ${
-            isClosing ? 'scale-95' : 'scale-100'
-          }`}
-          onClick={(e) => e.stopPropagation()}
-        >
+    <div className={`fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-0 md:p-4 ${
+      isClosing ? 'opacity-0' : 'opacity-100'
+    } transition-opacity duration-200`}>
+      {/* Mobile Layout */}
+      <div className={`md:hidden bg-black w-full h-full flex flex-col transform ${
+        isClosing ? 'scale-95' : 'scale-100'
+      } transition-transform duration-200`}>
+        {/* Mobile Header */}
+        <div className="flex justify-between items-center p-4 bg-black bg-opacity-75 z-10">
+          <button
+            onClick={() => setShowDetails(!showDetails)}
+            className="text-white hover:text-gray-300 bg-black bg-opacity-50 rounded-full p-2"
+            aria-label="Toggle details"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </button>
+          <button
+            onClick={handleClose}
+            className="text-white hover:text-gray-300 bg-black bg-opacity-50 rounded-full p-2"
+            aria-label="Close modal"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Mobile Media Content */}
+        {!showDetails && (
+          <div 
+            className="flex-1 flex items-center justify-center bg-black p-4 relative"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          >
+            {isLoading ? (
+              <div className="text-white text-lg">Loading...</div>
+            ) : image ? (
+              <div className={`w-full h-full flex items-center justify-center transition-opacity duration-300 ${
+                isTransitioning ? 'opacity-50' : 'opacity-100'
+              }`}>
+                {(() => {
+                  const ext = (image.filename || '').toLowerCase().split('.').pop()
+                  const isVideo = ext === 'webm' || ext === 'mp4' || ext === 'm4v' || ext === 'mov' || ext === 'avi'
+                  if (isVideo) {
+                    return <VideoPlayer src={`/api/image-file/${image.id}`} key={`mobile-${image.id}`} />
+                  }
+                  return (
+                    <img
+                      src={`/api/image-file/${image.id}`}
+                      alt={image.filename}
+                      className="max-w-full max-h-full w-auto h-auto object-contain"
+                      onError={(e) => {
+                        const img = e.currentTarget as HTMLImageElement
+                        img.src = image.thumbnail_path
+                      }}
+                    />
+                  )
+                })()}
+              </div>
+            ) : (
+              <div className="text-white text-lg">Image not found</div>
+            )}
+            
+            {/* Mobile Star Rating - Bottom Left */}
+            {image && (
+              <div className="absolute bottom-4 left-4">
+                <StarRating
+                  rating={image.rating || 0}
+                  onRatingChange={(rating) => ratingMutation.mutate({ id: image.id, rating })}
+                  size="lg"
+                  darkBackground={true}
+                />
+              </div>
+            )}
+            
+            {/* Mobile Navigation Buttons - Bottom Right */}
+            {onNavigate && (
+              <div className="absolute bottom-4 right-4 flex gap-2">
+                <button
+                  onClick={() => navigateWithTransition('prev')}
+                  className="text-white hover:text-gray-300 bg-black bg-opacity-50 rounded-full p-3"
+                  aria-label="Previous image"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => navigateWithTransition('next')}
+                  className="text-white hover:text-gray-300 bg-black bg-opacity-50 rounded-full p-3"
+                  aria-label="Next image"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Mobile Details Panel */}
+        {showDetails && (
+          <div className="flex-1 bg-white dark:bg-gray-900 p-4 overflow-y-auto">
+            {isLoading ? (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
+            ) : !image ? (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">Image not found</div>
+            ) : (
+              <ImageDetails image={image} favoriteMutation={favoriteMutation} ratingMutation={ratingMutation} />
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Desktop Layout */}
+      <div className={`hidden md:flex bg-white dark:bg-gray-900 rounded-lg max-w-7xl w-full max-h-[90vh] h-[90vh] overflow-hidden transform ${
+        isClosing ? 'scale-95' : 'scale-100'
+      } transition-transform duration-200`}>
+        
+        {/* Desktop Image Side */}
+        <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-gray-800 p-4 min-w-0 min-h-0 relative">
+          {/* Desktop Navigation Buttons */}
+          {onNavigate && (
+            <>
+              <button
+                onClick={() => navigateWithTransition('prev')}
+                className="absolute left-4 top-1/2 -translate-y-1/2 text-white hover:text-gray-300 z-10 bg-black bg-opacity-50 rounded-full p-3"
+                aria-label="Previous image"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+              <button
+                onClick={() => navigateWithTransition('next')}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-white hover:text-gray-300 z-10 bg-black bg-opacity-50 rounded-full p-3"
+                aria-label="Next image"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            </>
+          )}
+          <button
+            onClick={handleClose}
+            className="absolute top-4 right-4 text-white hover:text-gray-300 z-10 bg-black bg-opacity-50 rounded-full p-2"
+            aria-label="Close modal"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          
           {isLoading ? (
             <div className="text-white text-lg">Loading...</div>
           ) : image ? (
-            <div className="max-w-full max-h-full flex items-center justify-center">
-              <img
-                src={`/api/image-file/${image.id}`}
-                alt={image.filename}
-                className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-                onError={(e) => {
-                  // Fallback to thumbnail if original fails
-                  const img = e.currentTarget as HTMLImageElement
-                  img.src = image.thumbnail_path
-                }}
-              />
+            <div className={`w-full h-full flex items-center justify-center overflow-hidden transition-opacity duration-300 ${
+              isTransitioning ? 'opacity-50' : 'opacity-100'
+            }`}>
+              {(() => {
+                const ext = (image.filename || '').toLowerCase().split('.').pop()
+                const isVideo = ext === 'webm' || ext === 'mp4' || ext === 'm4v' || ext === 'mov' || ext === 'avi'
+                if (isVideo) {
+                  return <VideoPlayer src={`/api/image-file/${image.id}`} key={`desktop-${image.id}`} />
+                }
+                return (
+                  <img
+                    src={`/api/image-file/${image.id}`}
+                    alt={image.filename}
+                    className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg shadow-2xl"
+                    style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto' }}
+                    onError={(e) => {
+                      const img = e.currentTarget as HTMLImageElement
+                      img.src = image.thumbnail_path
+                    }}
+                  />
+                )
+              })()}
             </div>
           ) : (
             <div className="text-white text-lg">Image not found</div>
           )}
         </div>
 
-        {/* Metadata sidebar */}
-        <div 
-          className={`w-80 bg-white dark:bg-gray-900 rounded-l-lg shadow-xl overflow-y-auto transition-transform duration-200 ${
-            isClosing ? 'translate-x-full' : 'translate-x-0'
-          }`}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="p-6">
-            {/* Header with close button */}
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Image Details</h3>
-              <button
-                onClick={handleClose}
-                className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-                aria-label="Close"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            {isLoading ? (
-              <div className="text-gray-600 dark:text-gray-400">Loading metadata...</div>
-            ) : image ? (
-              <ImageMetadata image={image} />
-            ) : null}
-          </div>
+        {/* Desktop Info Side */}
+        <div className="w-96 bg-white dark:bg-gray-900 p-6 overflow-y-auto">
+          {isLoading ? (
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
+          ) : !image ? (
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">Image not found</div>
+          ) : (
+            <ImageDetails image={image} favoriteMutation={favoriteMutation} ratingMutation={ratingMutation} />
+          )}
         </div>
       </div>
     </div>
   )
 }
 
-function ImageMetadata({ image }: { image: Image }) {
-  const queryClient = useQueryClient()
+// Native video element with persistent volume/mute across videos
+function VideoPlayer({ src }: { src: string }) {
+  const [showControls, setShowControls] = useState(false) // Start without controls
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   
-  const favoriteMutation = useMutation(
-    () => imageApi.toggleFavorite(image.id),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries(['images'])
-        queryClient.invalidateQueries(['image', image.id])
+  // Detect iOS and current viewport size
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  const [isMobileViewport, setIsMobileViewport] = useState(window.innerWidth < 768)
+  
+  useEffect(() => {
+    const handleResize = () => setIsMobileViewport(window.innerWidth < 768)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  // Reset controls when video source changes
+  useEffect(() => {
+    // On iOS, hide controls during transitions to reduce disruption
+    if (isIOS) {
+      setShowControls(false)
+    }
+  }, [src, isIOS])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    // Stop any current playback before changing source
+    video.pause()
+    video.currentTime = 0
+    
+    // Change the source
+    video.src = src
+    video.load() // Force reload
+    
+    // Apply persisted settings
+    try {
+      const storedVol = localStorage.getItem('playerVolume')
+      if (storedVol != null) {
+        const vol = Math.max(0, Math.min(1, parseFloat(storedVol)))
+        if (!Number.isNaN(vol)) video.volume = vol
+      }
+      
+      const storedMuted = localStorage.getItem('playerMuted')
+      if (storedMuted != null) {
+        video.muted = storedMuted === 'true'
+      }
+    } catch {}
+
+    const onVolumeChange = () => {
+      try {
+        localStorage.setItem('playerVolume', String(video.volume))
+        localStorage.setItem('playerMuted', video.muted ? 'true' : 'false')
+      } catch {}
+    }
+    
+    video.addEventListener('volumechange', onVolumeChange)
+    
+    return () => {
+      video.removeEventListener('volumechange', onVolumeChange)
+      // Clean up when component changes
+      video.pause()
+      video.currentTime = 0
+    }
+  }, [src])
+  
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      const video = videoRef.current
+      if (video) {
+        video.pause()
+        video.currentTime = 0
+        video.src = ''
       }
     }
+  }, [])
+
+  return (
+    <video
+      ref={videoRef}
+      className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg shadow-2xl bg-black cursor-pointer"
+      controls={isIOS && isMobileViewport ? showControls : true} // iOS mobile starts hidden, everything else shows controls
+      controlsList="nodownload"
+      preload="auto"
+      playsInline
+      autoPlay
+      loop
+      muted
+      onClick={() => {
+        if (isIOS && isMobileViewport) {
+          setShowControls(!showControls)
+          // Auto-hide after 3 seconds when showing controls
+          if (!showControls) {
+            setTimeout(() => setShowControls(false), 3000)
+          }
+        }
+      }}
+    />
   )
-  
+}
+
+function ImageDetails({ image, favoriteMutation, ratingMutation }: { 
+  image: Image
+  favoriteMutation: any
+  ratingMutation: any
+}) {
+  const queryClient = useQueryClient()
+  const [tagInput, setTagInput] = useState('')
+
+  const addTagsMutation = useMutation(
+    ({ id, tags }: { id: number; tags: string[] }) => imageApi.addTags(id, tags),
+    {
+      onSuccess: () => {
+        setTagInput('')
+        // Refresh caches so new tags show up immediately
+        queryClient.invalidateQueries(['image', image.id])
+        queryClient.invalidateQueries(['images'])
+        queryClient.invalidateQueries('tags')
+      },
+    }
+  )
+
+  const handleAddTags = () => {
+    const raw = tagInput.trim()
+    if (!raw) return
+    const tags = raw
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0)
+    if (tags.length === 0) return
+    addTagsMutation.mutate({ id: image.id, tags })
+  }
+
+  // Tag suggestions (existing tags)
+  const { data: allTags } = useQuery('tags', () => tagApi.getTags('', 'name'))
+  type TagOption = { label: string; value: string }
+  const tagOptions: TagOption[] = (allTags || []).map((t: any) => ({ label: t.name, value: t.name }))
+  const [selectedTagOptions, setSelectedTagOptions] = useState<TagOption[]>([])
+  const [deleteOriginal, setDeleteOriginal] = useState(false)
+
+  const handleApplySelected = () => {
+    if (!selectedTagOptions.length) return
+    const tags = selectedTagOptions.map((o) => o.value)
+    addTagsMutation.mutate({ id: image.id, tags })
+    setSelectedTagOptions([])
+  }
+
+  // Categories: fetch and prepare options
+  type CatOption = { label: string; value: string; id?: number }
+  const { data: allCategories } = useQuery(['categories', 'name'], () => categoryApi.getCategories('', 'name'))
+  const categoryOptions: CatOption[] = (allCategories || []).map((c: Category) => ({ label: c.name, value: c.name, id: c.id }))
+  const [selectedCategoryOptions, setSelectedCategoryOptions] = useState<CatOption[]>([])
+  const [categoryInput, setCategoryInput] = useState('')
+
+  const addToCategoriesMutation = useMutation(
+    async ({ id, categoryNames }: { id: number; categoryNames: string[] }) => {
+      const existingMap = new Map<string, number>()
+      for (const c of (allCategories || [])) existingMap.set(c.name, c.id)
+
+      const ensureIds: number[] = []
+      for (const name of categoryNames) {
+        const hit = existingMap.get(name)
+        if (hit) {
+          ensureIds.push(hit)
+        } else {
+          try {
+            const created = await categoryApi.createCategory(name)
+            ensureIds.push(created.id)
+            existingMap.set(created.name, created.id)
+          } catch (e) {
+            const fallbackId = existingMap.get(name)
+            if (fallbackId) ensureIds.push(fallbackId)
+          }
+        }
+      }
+      await Promise.all(ensureIds.map((cid) => categoryApi.addImagesToCategory(cid, [id])))
+    },
+    {
+      onSuccess: async () => {
+        setSelectedCategoryOptions([])
+        setCategoryInput('')
+        await queryClient.invalidateQueries(['image', image.id])
+        await queryClient.invalidateQueries(['images'])
+        await queryClient.invalidateQueries('categories')
+      },
+    }
+  )
+
+  const handleApplyCategories = () => {
+    const fromSelect = selectedCategoryOptions.map((o) => o.value)
+    const typed = categoryInput
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0)
+    const names = Array.from(new Set([...fromSelect, ...typed]))
+    if (names.length === 0) return
+    addToCategoriesMutation.mutate({ id: image.id, categoryNames: names })
+  }
   const handleDownload = () => {
-    // Use the API download endpoint
     const link = document.createElement('a')
     link.href = `/api/image-file/${image.id}?download=true`
     link.download = image.filename
@@ -175,6 +570,20 @@ function ImageMetadata({ image }: { image: Image }) {
     link.click()
     document.body.removeChild(link)
   }
+
+  const deleteMutation = useMutation(
+    () => imageApi.deleteImage(image.id, deleteOriginal),
+    {
+      onSuccess: async () => {
+        await queryClient.invalidateQueries(['images'])
+        await queryClient.invalidateQueries('library-stats')
+        // Close modal by simulating onClose via a custom event
+        const evt = new CustomEvent('ai-image-deleted')
+        window.dispatchEvent(evt)
+      }
+    }
+  )
+
   const formatFileSize = (bytes: number | undefined) => {
     if (!bytes) return 'Unknown'
     const mb = bytes / (1024 * 1024)
@@ -183,13 +592,7 @@ function ImageMetadata({ image }: { image: Image }) {
 
   const formatDate = (dateString: string | undefined) => {
     if (!dateString) return 'Unknown'
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
+    return new Date(dateString).toLocaleDateString()
   }
 
   return (
@@ -211,113 +614,80 @@ function ImageMetadata({ image }: { image: Image }) {
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-gray-600 dark:text-gray-400">Format</span>
-            <span className="text-gray-900 dark:text-white uppercase">
-              {image.format || 'Unknown'}
-            </span>
-          </div>
-          <div className="flex justify-between">
             <span className="text-gray-600 dark:text-gray-400">File Size</span>
             <span className="text-gray-900 dark:text-white">
               {formatFileSize(image.file_size)}
             </span>
           </div>
-          <div className="flex justify-between">
-            <span className="text-gray-600 dark:text-gray-400">Created</span>
-            <span className="text-gray-900 dark:text-white">
-              {formatDate(image.created_at)}
-            </span>
-          </div>
+          {image.created_at && (
+            <div className="flex justify-between">
+              <span className="text-gray-600 dark:text-gray-400">Created</span>
+              <span className="text-gray-900 dark:text-white">
+                {formatDate(image.created_at)}
+              </span>
+            </div>
+          )}
         </div>
       </section>
 
-      {/* Actions */}
-      {image && (
+      {/* Camera & Photo Info */}
+      {(image.camera_make || image.camera_model || image.focal_length || image.aperture || image.iso || image.shutter_speed) && (
         <section>
-          <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Actions</h4>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2">
-                <span className="text-sm text-gray-600 dark:text-gray-400">Rating:</span>
-                <StarRating
-                  rating={image.rating || 0}
-                  onRatingChange={(rating) => ratingMutation.mutate({ id: image.id, rating })}
-                />
-              </div>
-              <div className="flex items-center space-x-2">
-                <span className="text-sm text-gray-600 dark:text-gray-400">Favorite:</span>
-                <FavoriteButton
-                  isFavorite={image.favorite || false}
-                  onToggle={() => favoriteMutation.mutate(image.id)}
-                />
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* AI Generation Parameters */}
-      {(image.prompt || image.model_name || image.seed) && (
-        <section>
-          <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">AI Generation</h4>
-          <div className="space-y-3 text-sm">
-            {image.model_name && (
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Camera Settings</h4>
+          <div className="space-y-2 text-sm">
+            {(image.camera_make || image.camera_model) && (
               <div>
-                <span className="text-gray-600 dark:text-gray-400 block mb-1">Model</span>
-                <span className="text-gray-900 dark:text-white font-mono text-xs">
-                  {image.model_name}
+                <span className="text-gray-600 dark:text-gray-400 block mb-1">Camera:</span>
+                <span className="text-gray-900 dark:text-white text-xs">
+                  {image.camera_make} {image.camera_model}
                 </span>
-                {image.model_hash && (
-                  <span className="text-gray-500 dark:text-gray-400 font-mono text-xs block">
-                    {image.model_hash}
-                  </span>
-                )}
               </div>
             )}
-            
-            {image.prompt && (
+            {image.lens_model && (
               <div>
-                <span className="text-gray-600 dark:text-gray-400 block mb-1">Prompt</span>
-                <div className="text-gray-900 dark:text-white text-xs leading-relaxed p-2 bg-gray-50 dark:bg-gray-800 rounded max-h-32 overflow-y-auto">
-                  {image.prompt}
-                </div>
+                <span className="text-gray-600 dark:text-gray-400 block mb-1">Lens:</span>
+                <span className="text-gray-900 dark:text-white text-xs">
+                  {image.lens_model}
+                </span>
               </div>
             )}
-            
-            {image.negative_prompt && (
-              <div>
-                <span className="text-gray-600 dark:text-gray-400 block mb-1">Negative Prompt</span>
-                <div className="text-gray-900 dark:text-white text-xs leading-relaxed p-2 bg-gray-50 dark:bg-gray-800 rounded max-h-24 overflow-y-auto">
-                  {image.negative_prompt}
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              {image.seed && (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {image.focal_length && (
                 <div>
-                  <span className="text-gray-600 dark:text-gray-400 block mb-1">Seed</span>
-                  <span className="text-gray-900 dark:text-white font-mono text-xs">
-                    {image.seed}
+                  <span className="text-gray-600 dark:text-gray-400 block">Focal Length:</span>
+                  <span className="text-gray-900 dark:text-white">{image.focal_length}mm</span>
+                </div>
+              )}
+              {image.aperture && (
+                <div>
+                  <span className="text-gray-600 dark:text-gray-400 block">Aperture:</span>
+                  <span className="text-gray-900 dark:text-white">f/{image.aperture}</span>
+                </div>
+              )}
+              {image.shutter_speed && (
+                <div>
+                  <span className="text-gray-600 dark:text-gray-400 block">Shutter Speed:</span>
+                  <span className="text-gray-900 dark:text-white font-mono">{image.shutter_speed}s</span>
+                </div>
+              )}
+              {image.iso && (
+                <div>
+                  <span className="text-gray-600 dark:text-gray-400 block">ISO:</span>
+                  <span className="text-gray-900 dark:text-white">{image.iso}</span>
+                </div>
+              )}
+              {image.flash_used !== undefined && (
+                <div>
+                  <span className="text-gray-600 dark:text-gray-400 block">Flash:</span>
+                  <span className="text-gray-900 dark:text-white">{image.flash_used ? 'Yes' : 'No'}</span>
+                </div>
+              )}
+              {image.date_taken && (
+                <div>
+                  <span className="text-gray-600 dark:text-gray-400 block">Date Taken:</span>
+                  <span className="text-gray-900 dark:text-white text-xs">
+                    {new Date(image.date_taken).toLocaleDateString()}
                   </span>
-                </div>
-              )}
-              {image.steps && (
-                <div>
-                  <span className="text-gray-600 dark:text-gray-400 block mb-1">Steps</span>
-                  <span className="text-gray-900 dark:text-white">{image.steps}</span>
-                </div>
-              )}
-              {image.cfg_scale && (
-                <div>
-                  <span className="text-gray-600 dark:text-gray-400 block mb-1">CFG Scale</span>
-                  <span className="text-gray-900 dark:text-white">{image.cfg_scale}</span>
-                </div>
-              )}
-              {image.sampler && (
-                <div>
-                  <span className="text-gray-600 dark:text-gray-400 block mb-1">Sampler</span>
-                  <span className="text-gray-900 dark:text-white text-xs">{image.sampler}</span>
                 </div>
               )}
             </div>
@@ -325,19 +695,19 @@ function ImageMetadata({ image }: { image: Image }) {
         </section>
       )}
 
-      {/* Tags and Categories */}
-      {(image.tags.length > 0 || image.categories.length > 0) && (
+      {/* Tags & Categories */}
+      {(image.tags?.length > 0 || image.categories?.length > 0) && (
         <section>
-          <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Organization</h4>
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Tags & Categories</h4>
           <div className="space-y-3">
-            {image.tags.length > 0 && (
+            {image.tags && image.tags.length > 0 && (
               <div>
-                <span className="text-gray-600 dark:text-gray-400 block mb-2 text-sm">Tags</span>
+                <span className="text-gray-600 dark:text-gray-400 block mb-2 text-xs">Tags:</span>
                 <div className="flex flex-wrap gap-1">
-                  {image.tags.map((tag) => (
+                  {image.tags.map((tag, index) => (
                     <span
-                      key={tag}
-                      className="px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-xs rounded-full"
+                      key={index}
+                      className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
                     >
                       {tag}
                     </span>
@@ -345,15 +715,14 @@ function ImageMetadata({ image }: { image: Image }) {
                 </div>
               </div>
             )}
-            
-            {image.categories.length > 0 && (
+            {image.categories && image.categories.length > 0 && (
               <div>
-                <span className="text-gray-600 dark:text-gray-400 block mb-2 text-sm">Categories</span>
+                <span className="text-gray-600 dark:text-gray-400 block mb-2 text-xs">Categories:</span>
                 <div className="flex flex-wrap gap-1">
-                  {image.categories.map((category) => (
+                  {image.categories.map((category, index) => (
                     <span
-                      key={category}
-                      className="px-2 py-1 bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 text-xs rounded-full"
+                      key={index}
+                      className="inline-flex items-center px-2 py-1 rounded-full text-xs bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
                     >
                       {category}
                     </span>
@@ -368,25 +737,139 @@ function ImageMetadata({ image }: { image: Image }) {
       {/* Actions */}
       <section>
         <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Actions</h4>
-        <div className="space-y-2">
-          <button 
+        <div className="space-y-3">
+          <div className="flex items-center space-x-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">Rating:</span>
+            <StarRating
+              rating={image.rating || 0}
+              onRatingChange={(rating) => ratingMutation.mutate({ id: image.id, rating })}
+            />
+          </div>
+          <div className="flex items-center space-x-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">Favorite:</span>
+            <FavoriteButton
+              isFavorite={image.favorite || false}
+              onToggle={() => favoriteMutation.mutate(image.id)}
+            />
+          </div>
+          <button
             onClick={handleDownload}
-            className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md transition-colors"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md text-sm font-medium transition-colors"
           >
             Download Original
           </button>
-          <button 
-            onClick={() => favoriteMutation.mutate()}
-            disabled={favoriteMutation.isLoading}
-            className="w-full px-3 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-900 dark:text-white text-sm rounded-md transition-colors disabled:opacity-50"
-          >
-            {favoriteMutation.isLoading 
-              ? 'Updating...' 
-              : image.favorite 
-                ? 'Remove from Favorites' 
-                : 'Add to Favorites'
-            }
-          </button>
+
+          {/* Delete */}
+          <div className="p-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+            <label className="flex items-center space-x-2 text-xs text-red-700 dark:text-red-300 mb-2">
+              <input
+                type="checkbox"
+                checked={deleteOriginal}
+                onChange={(e) => setDeleteOriginal(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <span>Also delete original file</span>
+            </label>
+            <button
+              onClick={() => {
+                if (confirm(deleteOriginal ? 'Delete from library AND remove original file?' : 'Delete from library?')) {
+                  deleteMutation.mutate()
+                }
+              }}
+              disabled={deleteMutation.isLoading}
+              className="w-full bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {deleteMutation.isLoading ? 'Deleting…' : (deleteOriginal ? 'Delete (incl. original)' : 'Delete from Library')}
+            </button>
+          </div>
+          
+          {/* Quick Tagging */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Add Tags
+            </label>
+            <div className="space-y-2">
+              {/* Autocomplete (existing tags; creatable) */}
+              <CreatableSelect
+                isMulti
+                value={selectedTagOptions}
+                onChange={(val: any) => setSelectedTagOptions(val || [])}
+                options={tagOptions}
+                placeholder="Type to search or create…"
+                classNamePrefix="select"
+                menuPortalTarget={typeof document !== 'undefined' ? document.body : undefined}
+                styles={{ menuPortal: (base: any) => ({ ...base, zIndex: 9999 }) }}
+                onKeyDown={(e: any) => {
+                  if (e.key === 'Enter') {
+                    // Let react-select create/select first, then apply
+                    setTimeout(() => handleApplySelected(), 30)
+                  }
+                }}
+              />
+              
+
+              {/* Free text input (comma‑separated) */}
+              <div className="flex items-center space-x-2">
+                <input
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddTags() } }}
+                  placeholder="e.g. portrait, watercolor"
+                  className="flex-1 px-3 py-2 rounded-md bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-sm text-gray-900 dark:text-white"
+                />
+                <button
+                  onClick={handleAddTags}
+                  disabled={addTagsMutation.isLoading}
+                  className="px-3 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
+                >
+                  {addTagsMutation.isLoading ? 'Adding…' : 'Add'}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Select or create tags and press Enter to apply, or type comma‑separated below.</p>
+            </div>
+          </div>
+
+          {/* Add to Categories */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Add to Categories
+            </label>
+            <div className="space-y-2">
+              <CreatableSelect
+                isMulti
+                value={selectedCategoryOptions}
+                onChange={(val: any) => setSelectedCategoryOptions(val || [])}
+                options={categoryOptions}
+                placeholder="Type to search or create…"
+                classNamePrefix="select"
+                menuPortalTarget={typeof document !== 'undefined' ? document.body : undefined}
+                styles={{ menuPortal: (base: any) => ({ ...base, zIndex: 9999 }) }}
+                onKeyDown={(e: any) => {
+                  if (e.key === 'Enter') {
+                    // Allow option creation before applying
+                    setTimeout(() => handleApplyCategories(), 30)
+                  }
+                }}
+              />
+              <div className="flex items-center space-x-2">
+                <input
+                  value={categoryInput}
+                  onChange={(e) => setCategoryInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleApplyCategories() } }}
+                  placeholder="or type: Landscapes, Portraits"
+                  className="flex-1 px-3 py-2 rounded-md bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-sm text-gray-900 dark:text-white"
+                />
+                <button
+                  onClick={handleApplyCategories}
+                  disabled={addToCategoriesMutation.isLoading}
+                  className="px-3 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
+                >
+                  {addToCategoriesMutation.isLoading ? 'Adding…' : 'Add'}
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Select existing or create new categories; press Enter or click Add.</p>
+            </div>
+          </div>
         </div>
       </section>
     </div>

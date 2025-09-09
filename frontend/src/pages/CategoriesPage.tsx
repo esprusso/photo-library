@@ -1,7 +1,8 @@
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { Link } from 'react-router-dom'
+import CategoryCoverPicker from '../components/CategoryCoverPicker'
 import { categoryApi } from '../services/api'
 import type { Category } from '../types'
 
@@ -14,6 +15,11 @@ export default function CategoriesPage() {
   const [selectedCategories, setSelectedCategories] = useState<Set<number>>(new Set())
   const [bulkMode, setBulkMode] = useState(false)
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null)
+  const [showAutoCategorize, setShowAutoCategorize] = useState<boolean>(() => {
+    return localStorage.getItem('showAutoCategorize') !== 'false'
+  })
+  const [createCoverId, setCreateCoverId] = useState<number | undefined>(undefined)
+  const [showCreatePicker, setShowCreatePicker] = useState(false)
   
   const { data: categories, isLoading } = useQuery(
     ['categories', sortBy], 
@@ -25,11 +31,12 @@ export default function CategoriesPage() {
   )
   
   const createMutation = useMutation(
-    () => categoryApi.createCategory(name, description), 
+    () => categoryApi.createCategory(name, description, undefined, createCoverId), 
     {
       onSuccess: () => {
         setName('')
         setDescription('')
+        setCreateCoverId(undefined)
         qc.invalidateQueries('categories')
       },
     }
@@ -76,7 +83,7 @@ export default function CategoriesPage() {
   )
 
   const updateMutation = useMutation(
-    ({ id, updates }: { id: number; updates: { name?: string; description?: string; color?: string } }) =>
+    ({ id, updates }: { id: number; updates: { name?: string; description?: string; color?: string; cover_image_id?: number | null } }) =>
       categoryApi.updateCategory(id, updates),
     {
       onSuccess: () => {
@@ -112,6 +119,18 @@ export default function CategoriesPage() {
     },
   })
 
+  // Live-apply UI preference toggles from Settings
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<any>).detail || {}
+      if (typeof detail.showAutoCategorize === 'boolean') {
+        setShowAutoCategorize(detail.showAutoCategorize)
+      }
+    }
+    window.addEventListener('ui-preferences', handler as any)
+    return () => window.removeEventListener('ui-preferences', handler as any)
+  }, [])
+
   const handleEdit = (category: Category) => {
     setEditingCategory(category)
   }
@@ -133,7 +152,7 @@ export default function CategoriesPage() {
       updates: {
         name: editingCategory.name,
         description: editingCategory.description,
-        color: editingCategory.color
+        cover_image_id: editingCategory.cover_image_id
       }
     })
   }
@@ -224,14 +243,16 @@ export default function CategoriesPage() {
           >
             {bulkMode ? 'Exit Bulk Mode' : 'Bulk Select'}
           </button>
-          <button
-            onClick={() => autoCategorizeMutation.mutate()}
-            disabled={autoCategorizeMutation.isLoading}
-            className="px-4 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
-            title="Auto-create categories from folder structure"
-          >
-            {autoCategorizeMutation.isLoading ? 'Processing...' : '📁 Auto-Categorize Folders'}
-          </button>
+          {showAutoCategorize && (
+            <button
+              onClick={() => autoCategorizeMutation.mutate()}
+              disabled={autoCategorizeMutation.isLoading}
+              className="px-4 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
+              title="Auto-create categories from folder structure"
+            >
+              {autoCategorizeMutation.isLoading ? 'Processing...' : '📁 Auto-Categorize Folders'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -252,6 +273,19 @@ export default function CategoriesPage() {
               placeholder="Description (optional)"
               className="px-3 py-2 rounded-md bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-sm text-gray-900 dark:text-white"
             />
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setShowCreatePicker(true)}
+                className="px-3 py-2 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700"
+              >
+                {createCoverId ? 'Change Cover Image' : 'Pick Cover Image'}
+              </button>
+              {createCoverId && (
+                <div className="w-16 h-16 rounded overflow-hidden bg-gray-200 dark:bg-gray-700">
+                  <img src={`/api/images/file/${createCoverId}`} className="w-full h-full object-cover" />
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center justify-between">
             <div></div>
@@ -265,6 +299,16 @@ export default function CategoriesPage() {
           </div>
         </div>
       </div>
+      {showCreatePicker && (
+        <CategoryCoverPicker
+          isOpen={showCreatePicker}
+          onClose={() => setShowCreatePicker(false)}
+          onSelect={(img) => {
+            setCreateCoverId(img.id)
+            setShowCreatePicker(false)
+          }}
+        />
+      )}
 
       {/* Bulk Controls */}
       {bulkMode && (
@@ -388,9 +432,11 @@ function CategoryCard({
   updateMutation: any
   isFeatured: boolean
 }) {
+  const [showPicker, setShowPicker] = useState(false)
   return (
+    <>
     <div
-      className={`bg-white dark:bg-gray-800 rounded-lg border p-4 transition-all ${
+      className={`bg-white dark:bg-gray-800 rounded-lg border p-0 overflow-hidden transition-all ${
         bulkMode ? 'cursor-pointer hover:shadow-lg' : 'hover:shadow-md'
       } ${
         bulkMode && selectedCategories.has(category.id)
@@ -399,6 +445,21 @@ function CategoryCard({
       }`}
       onClick={bulkMode ? (e) => onToggleSelection(category.id, e) : undefined}
     >
+      {/* Large cover at the top of the card, flush edge-to-edge */}
+      <div className="w-full h-44 bg-gray-200 dark:bg-gray-700">
+        {category.cover_image_id ? (
+          <img
+            src={`/api/images/file/${category.cover_image_id}`}
+            alt={category.name}
+            className="block w-full h-full object-cover"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-xs text-gray-500">
+            No cover
+          </div>
+        )}
+      </div>
+      <div className="p-4">
               {editingCategory?.id === category.id ? (
                 // Edit Mode
                 <div className="space-y-3">
@@ -415,13 +476,21 @@ function CategoryCard({
                     className="w-full px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm resize-none"
                   />
                   <div className="flex items-center space-x-2">
-                    <label className="text-sm text-gray-700 dark:text-gray-300">Color:</label>
-                    <input
-                      type="color"
-                      value={editingCategory.color}
-                      onChange={(e) => setEditingCategory({...editingCategory, color: e.target.value})}
-                      className="w-8 h-8 rounded border border-gray-300 dark:border-gray-600"
-                    />
+                    <button
+                      onClick={() => setShowPicker(true)}
+                      className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+                    >
+                      Pick Cover from Category
+                    </button>
+                    {editingCategory.cover_image_id && (
+                      <button
+                        onClick={() => updateMutation.mutate({ id: editingCategory.id, updates: { cover_image_id: null } })}
+                        disabled={updateMutation.isLoading}
+                        className="px-3 py-1 bg-gray-500 text-white text-xs rounded hover:bg-gray-600 disabled:opacity-50"
+                      >
+                        Clear Cover
+                      </button>
+                    )}
                   </div>
                   <div className="flex space-x-2">
                     <button
@@ -444,7 +513,7 @@ function CategoryCard({
                 <>
                   <div className="flex items-start justify-between mb-2">
                     <div className="flex items-center space-x-3">
-                      {bulkMode && (
+                    {bulkMode && (
                         <input
                           type="checkbox"
                           checked={selectedCategories.has(category.id)}
@@ -456,10 +525,6 @@ function CategoryCard({
                           className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600"
                         />
                       )}
-                      <div
-                        className="w-4 h-4 rounded-full flex-shrink-0 mt-0.5"
-                        style={{ backgroundColor: category.color }}
-                      ></div>
                     </div>
                     {!bulkMode && (
                       <div className="flex space-x-1">
@@ -522,6 +587,19 @@ function CategoryCard({
                   )}
                 </>
               )}
+      </div>
     </div>
+    {showPicker && (
+      <CategoryCoverPicker
+        categoryName={category.name}
+        isOpen={showPicker}
+        onClose={() => setShowPicker(false)}
+        onSelect={(img) => {
+          updateMutation.mutate({ id: category.id, updates: { cover_image_id: img.id } })
+          setShowPicker(false)
+        }}
+      />
+    )}
+    </>
   )
 }

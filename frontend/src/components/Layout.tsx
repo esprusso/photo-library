@@ -10,6 +10,9 @@ interface LayoutProps {
 
 export default function Layout({ children }: LayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem('sidebarCollapsed') === 'true'
+  })
   const [searchOpen, setSearchOpen] = useState(false)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const stored = localStorage.getItem('theme') as 'light' | 'dark' | null
@@ -43,6 +46,12 @@ export default function Layout({ children }: LayoutProps) {
 
   const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))
 
+  const toggleSidebarCollapsed = () => {
+    const next = !sidebarCollapsed
+    setSidebarCollapsed(next)
+    localStorage.setItem('sidebarCollapsed', next ? 'true' : 'false')
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       {/* Mobile sidebar backdrop */}
@@ -54,10 +63,15 @@ export default function Layout({ children }: LayoutProps) {
       )}
 
       {/* Sidebar */}
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar 
+        open={sidebarOpen} 
+        onClose={() => setSidebarOpen(false)} 
+        collapsed={sidebarCollapsed} 
+        onToggleCollapse={toggleSidebarCollapsed}
+      />
 
       {/* Main content */}
-      <div className="lg:pl-64 flex flex-col min-h-screen">
+      <div className={`${sidebarCollapsed ? 'lg:pl-0' : 'lg:pl-64'} flex flex-col min-h-screen transition-[padding]` }>
         {/* Top navigation */}
         <header className="sticky top-0 z-30 bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700 sa-pt">
           <div className="px-4 sm:px-6 lg:px-8">
@@ -72,15 +86,34 @@ export default function Layout({ children }: LayoutProps) {
                 </svg>
               </button>
 
-              {/* Page title */}
+              {/* Page title + desktop collapse toggle */}
               <div className="flex items-center">
+                {/* Collapse/Expand sidebar (desktop) */}
+                <button
+                  onClick={toggleSidebarCollapsed}
+                  className="hidden lg:inline-flex mr-3 p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md dark:text-gray-300 dark:hover:text-white dark:hover:bg-gray-700"
+                  title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+                  aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+                >
+                  {sidebarCollapsed ? (
+                    // Show (hamburger) icon
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M4 6h16M4 12h10M4 18h16"/>
+                    </svg>
+                  ) : (
+                    // Hide (collapse) icon
+                    <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M4 6h10M4 12h16M4 18h10"/>
+                    </svg>
+                  )}
+                </button>
                 <h1 className="text-xl font-semibold text-gray-900 dark:text-white">
                   {getPageTitle(location.pathname)}
                 </h1>
               </div>
 
               {/* Actions */}
-              <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2">
                 {/* Theme toggle */}
                 <button
                   onClick={toggleTheme}
@@ -150,7 +183,9 @@ function getPageTitle(pathname: string): string {
     case '/browse':
       return 'Browse Photos'
     case '/random':
-      return 'Random'
+      return 'Random GIF'
+    case '/random-clip':
+      return 'Random Clip'
     case '/tags':
       return 'Tags'
     case '/categories':
@@ -163,6 +198,6 @@ function getPageTitle(pathname: string): string {
       if (pathname.startsWith('/image/')) {
         return 'Photo Details'
       }
-      return 'Photo Library'
+      return 'GIF Library'
   }
 }

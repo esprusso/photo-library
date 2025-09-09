@@ -27,3 +27,6 @@ pillow>=10.0.0
 
 # System monitoring for resource-aware AI tagging
 psutil==5.9.6
+
+# Optional: watchdog for event-based FS watching (not required; we poll by default)
+# watchdog==4.0.1

@@ -27,31 +27,37 @@ class MetadataExtractor:
             'exif_data': {}
         }
         
-        try:
-            # Get image dimensions and format
-            with PILImage.open(file_path) as img:
-                metadata['image_info'] = {
-                    'width': img.width,
-                    'height': img.height,
-                    'aspect_ratio': round(img.width / img.height, 3),
-                    'format': img.format,
-                    'mode': img.mode
-                }
-                
-                # Extract AI metadata from PNG text chunks
-                if img.format == 'PNG' and hasattr(img, 'text'):
-                    metadata['ai_metadata'] = self._extract_png_metadata(img.text)
-                
-                # Extract EXIF data
-                if hasattr(img, '_getexif'):
-                    exif = img._getexif()
-                    if exif:
-                        metadata['exif_data'] = self._process_exif(exif)
-        
-        except Exception as e:
-            import logging
-            logging.error(f"Error extracting metadata from {file_path}: {e}")
-            metadata['error'] = str(e)
+        ext = os.path.splitext(file_path)[1].lower()
+        image_exts = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp'}
+        if ext in image_exts:
+            try:
+                # Get image dimensions and format
+                with PILImage.open(file_path) as img:
+                    metadata['image_info'] = {
+                        'width': img.width,
+                        'height': img.height,
+                        'aspect_ratio': round(img.width / img.height, 3),
+                        'format': img.format,
+                        'mode': img.mode
+                    }
+                    
+                    # Extract AI metadata from PNG text chunks
+                    if img.format == 'PNG' and hasattr(img, 'text'):
+                        metadata['ai_metadata'] = self._extract_png_metadata(img.text)
+                    
+                    # Extract EXIF data
+                    if hasattr(img, '_getexif'):
+                        exif = img._getexif()
+                        if exif:
+                            metadata['exif_data'] = self._process_exif(exif)
+            
+            except Exception as e:
+                import logging
+                logging.error(f"Error extracting metadata from {file_path}: {e}")
+                metadata['error'] = str(e)
+        else:
+            # Non-image (e.g., video). We will rely on file_info only.
+            pass
         
         # Look for sidecar JSON files (ComfyUI, etc.)
         sidecar_metadata = self._extract_sidecar_metadata(file_path)

@@ -1,16 +1,24 @@
-# Photo Library
+# GIF Library (Enhanced Photo Library)
 
-A self‑hosted web app to browse, search, tag, categorize, favorite, rate, and download photos stored on local or NAS storage. It is designed for large libraries, extracts camera metadata from EXIF data, and provides fast browsing and organization.
+A self‑hosted web app to browse, search, tag, categorize, favorite, rate, and download animated GIFs and photos. Originally designed for static photos, now enhanced with hover-to-play animations, aspect-ratio preserving grids, and high-resolution thumbnails for an optimal animated content viewing experience.
 
 ## Highlights
 
+### 🎬 GIF & Animation Features
+- **Hover-to-play animations** - GIFs and videos play smoothly on mouse hover
+- **Aspect-ratio preserving grid** - No cropping, images maintain natural proportions
+- **High-resolution thumbnails** - 2x/3x DPR support for crisp display on all screens
+- **Video previews** - MP4/WebM previews for better performance than GIF decoding
+- **Accessibility support** - Respects reduced-motion preferences with manual controls
+
+### 📋 Core Features
 - Browse fast with thumbnails, lazy loading, and a focused photo viewer
 - Organize with free‑form tags, color‑coded categories, favorites, and star ratings
 - Search and filter by filename, camera metadata, tags, categories, and dimensions
-- Background jobs for library indexing and thumbnail generation
+- Background jobs for library indexing and enhanced thumbnail generation
 - Batch actions for favorite/rate/download/tag; ZIP export of selected photos
 - Robust metadata extraction from EXIF data including camera settings and timestamps
-- Support for common photo formats including RAW files (CR2, NEF, ARW, DNG)
+- Support for common photo formats including RAW files and animated GIFs
 - NAS‑friendly path mapping and local media copies for reliable serving
 - Simple Docker Compose stack (PostgreSQL, FastAPI backend, React frontend)
 
@@ -20,7 +28,7 @@ A self‑hosted web app to browse, search, tag, categorize, favorite, rate, and 
   - Models: `Image`, `Tag`, `Category`, `Job`
   - Services: image scanner, thumbnail generator, metadata extractor, media manager, AI tagger (full + lite)
   - Static mounts: `THUMBNAILS_DIR` → `/thumbnails`, `DOWNLOADS_DIR` → `/download`, `MEDIA_DIR` → `/media`
-  - API docs: `http://localhost:8000/docs`
+  - API docs (Docker): `http://localhost:8087/api/docs`
 - Frontend: React + TypeScript + Tailwind
   - Pages: Browse, Image Detail, Tags, Categories, Jobs, Settings
   - State/data: React Query; keyboard shortcuts; adjustable grid sizes
@@ -37,9 +45,11 @@ A self‑hosted web app to browse, search, tag, categorize, favorite, rate, and 
   - Normalizes fields like `prompt`, `negative_prompt`, `model_name`, `seed`, `steps`, `cfg_scale`, `sampler`
   - HEIC/HEIF supported when `pillow-heif` is available
 
-- Thumbnails:
-  - Generates JPEG thumbnails (size configurable via `THUMBNAIL_SIZE`)
-  - Robust fallbacks for tricky AI images; optional ffmpeg decoding fallback
+- Enhanced Thumbnails:
+  - Generates multi-resolution JPEG thumbnails (1x, 2x, 3x DPR)
+  - Creates video previews (MP4/WebM) for animated GIFs
+  - Intelligent format selection and device-aware loading
+  - Robust fallbacks for tricky AI images; optional ffmpeg encoding
 
 - Browsing UI:
   - Responsive grid (small/medium/large), lazy loading, dark mode
@@ -89,17 +99,40 @@ cp .env.example .env
 docker-compose up -d
 ```
 
-3) Open the app:
+3) Generate enhanced thumbnails (recommended):
 
-- Frontend: http://localhost:8080
-- API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+```
+python generate_enhanced_thumbnails.py
+```
+
+This creates high-resolution thumbnails and video previews for animated GIFs.
+
+4) Open the app:
+
+- Frontend: http://localhost:8087
+- API (via proxy): http://localhost:8087/api
+- API Docs: http://localhost:8087/api/docs
 
 By default the compose file mounts:
 
 - A read‑only NAS library at `/library` (adjust to your NAS path)
 - An app data directory for thumbnails, downloads, and media at `/data`
-- Optional: host `ffmpeg` binary inside the backend for fallback decoding
+- Optional: host `ffmpeg` binary inside the backend for video preview generation
+
+### Automatic Import Watcher
+
+The backend includes an ImportWatcher that periodically scans your configured library paths for new media and imports them automatically.
+
+- Environment:
+  - `IMPORT_WATCH_ENABLED` (default `true`)
+  - `IMPORT_WATCH_INTERVAL_SECONDS` (default `60`)
+  - `LIBRARY_PATHS` (comma-separated; e.g. `/library,/clips`)
+- Endpoints:
+  - `GET /api/watch/status` — current status and last run
+  - `POST /api/watch/scan-now` — trigger an immediate scan
+  - `POST /api/watch/enable` / `POST /api/watch/disable` — toggle watcher
+
+This uses efficient polling (no inotify dependency) to suit NAS environments. The scan itself is incremental and safe to run frequently.
 
 ## Configuration
 
@@ -110,13 +143,17 @@ Environment variables (via `.env` or compose `environment`):
 - `THUMBNAILS_DIR`: Directory for generated thumbnails (default `/thumbnails` in app; compose maps to `/data/thumbnails`).
 - `DOWNLOADS_DIR`: Directory for generated ZIPs (default `/downloads`; compose maps to `/data/downloads`).
 - `MEDIA_DIR`: Directory for local media copies (default `/data/media`).
-- `THUMBNAIL_SIZE`: Max thumbnail dimension in pixels (default `256`).
-- `ENABLE_FFMPEG_FALLBACK`: Set to `true` to allow ffmpeg fallback when PIL fails.
+- `THUMBNAIL_SIZE`: Base thumbnail dimension in pixels (default `256`).
+- `THUMBNAIL_SCALE`: Scale factor for high-DPI thumbnails (default `2`).
+- `ENABLE_3X_DPR`: Enable 3x DPR thumbnails for ultra-high-DPI screens (default `false`).
+- `ANIMATED_PREVIEW_FORMAT`: Format for animated previews: `auto`, `mp4`, `webm`, `gif` (default `auto`).
+- `HOVER_PRELOAD_DELAY_MS`: Delay before starting hover animation in milliseconds (default `100`).
+- `ENABLE_FFMPEG_FALLBACK`: Set to `true` to enable ffmpeg for video preview generation.
 - `TZ`: Time zone (e.g., `Etc/UTC`).
 - Optional: `SECRET_KEY`, `ALLOWED_HOSTS` for deployments where you add auth/proxy layers.
 
 Notes:
-- The backend contains a convenience path mapper from a Synology‑style path (`/volume1/Heritage/AI Art`) to `/library`. Update volume mounts and/or adjust code if your NAS uses different roots.
+- The backend contains a convenience path mapper from your Synology host path (e.g., `/volume1/homes/rheritage/Spicy Gif Library`) to the container mount `/library`. Update volume mounts and/or adjust code if your NAS uses different roots.
 - When using SQLite (`DB_URL` starts with `sqlite:`), the backend ensures the DB path exists under the container.
 
 ## API Overview
@@ -141,7 +178,7 @@ Base path: both with and without `/api` prefix for backward compatibility.
 - Library utils: `POST /scan` (scan now), `GET /stats`, `GET /media-stats`, `GET /health`
 - Debug: `GET /debug/simple`, `GET /debug/images`, `GET /debug/filesystem`
 
-Explore and try responses at `http://localhost:8000/docs`.
+Explore and try responses at `http://localhost:8087/api/docs`.
 
 ## Data Model
 

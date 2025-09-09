@@ -5,6 +5,7 @@ Media Management Script for AI Image Library
 This script helps manage local media copies outside the container.
 """
 
+import os
 import requests
 import time
 import sys
@@ -13,7 +14,7 @@ import sys
 def check_api_status():
     """Check if the API is running"""
     try:
-        response = requests.get("http://localhost:8000/health")
+        response = requests.get(f"{API_BASE}/health")
         return response.status_code == 200
     except requests.ConnectionError:
         return False
@@ -22,7 +23,7 @@ def check_api_status():
 def get_media_stats():
     """Get media management statistics"""
     try:
-        response = requests.get("http://localhost:8000/media-stats")
+        response = requests.get(f"{API_BASE}/media-stats")
         if response.status_code == 200:
             return response.json()
     except requests.RequestException as e:
@@ -33,7 +34,7 @@ def get_media_stats():
 def create_media_copies():
     """Trigger creation of local media copies"""
     try:
-        response = requests.post("http://localhost:8000/create-media-copies")
+        response = requests.post(f"{API_BASE}/create-media-copies")
         if response.status_code == 200:
             return response.json()
     except requests.RequestException as e:
@@ -48,7 +49,9 @@ def main():
         command = "status"
     
     if not check_api_status():
-        print("❌ API is not running. Start with: docker-compose up -d")
+        print("❌ API is not reachable.")
+        print("   - If using Docker, start services: docker compose up -d")
+        print("   - If running locally, set API_BASE_URL (e.g. http://localhost:8000) and retry")
         return
     
     if command == "status":
@@ -84,5 +87,6 @@ def main():
         print("  python manage_media.py copy    - Create local copies of all images")
 
 
+API_BASE = os.getenv("API_BASE_URL", "http://localhost:8087/api")
 if __name__ == "__main__":
     main()

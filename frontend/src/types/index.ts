@@ -22,6 +22,9 @@ export interface Image {
   modified_at?: string
   indexed_at?: string
   thumbnail_path: string
+  thumbnail_paths?: { [key: string]: string }  // e.g., {"1x": "/path/1x.jpg", "2x": "/path/2x.jpg"}
+  animated_preview_paths?: { [key: string]: string }  // e.g., {"mp4": "/path/preview.mp4", "webm": "/path/preview.webm"}
+  is_animated?: boolean
   tags: string[]
   categories: string[]
 }
@@ -38,10 +41,12 @@ export interface Category {
   id: number
   name: string
   description?: string
-  color: string
+  color?: string
   featured: boolean  // Always false until database migration
   created_at?: string
   image_count: number
+  cover_image_id?: number
+  cover_image_url?: string
 }
 
 export interface Job {
@@ -73,6 +78,10 @@ export interface ImageFilters {
   max_height?: number
   date_from?: string
   date_to?: string
+  file_format?: string
+  exclude_jpg?: boolean
+  exclude_static?: boolean
+  media?: 'gif' | 'video' | 'image'
 }
 
 export interface SortOptions {
@@ -85,4 +94,6 @@ export interface LibraryStats {
   total_tags: number
   total_categories: number
   favorites: number
+  gifs?: number
+  videos?: number
 }

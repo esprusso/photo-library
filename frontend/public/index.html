@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/gif-logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GIF Library</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div class="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div class="text-center max-w-md mx-auto p-8">
+          <h1 class="text-4xl font-bold text-gray-900 mb-4">🎬 GIF Library</h1>
+          <p class="text-gray-600 mb-4">Your video and GIF collection viewer</p>
+          
+          <div class="bg-white rounded-lg p-6 shadow-lg mb-4">
+            <h2 class="text-xl font-semibold mb-2">Backend Status</h2>
+            <p class="text-gray-600 mb-2">API available at:</p>
+            <a href="/api/docs" class="text-blue-600 hover:text-blue-800 font-mono text-sm">/api/docs</a>
+          </div>
+          
+          <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <h3 class="text-lg font-semibold text-yellow-800 mb-2">⚠️ Build Notice</h3>
+            <p class="text-sm text-yellow-700">Frontend React build encountered Synology compatibility issues. This is a temporary static version.</p>
+          </div>
+          
+          <div class="mt-6">
+            <h3 class="text-lg font-semibold mb-2">Available APIs</h3>
+            <div class="space-y-2 text-sm">
+              <a href="/api/health" class="block text-blue-600 hover:text-blue-800">/api/health - Backend health check</a>
+              <a href="/api/images" class="block text-blue-600 hover:text-blue-800">/api/images - List images/videos</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      // Basic functionality test
+      fetch('/api/health')
+        .then(response => response.json())
+        .then(data => {
+          console.log('Backend health:', data);
+          const status = document.createElement('div');
+          status.innerHTML = '<div class="mt-4 p-2 bg-green-100 text-green-800 rounded">✅ Backend is responding</div>';
+          document.querySelector('.max-w-md').appendChild(status);
+        })
+        .catch(error => {
+          console.error('Backend error:', error);
+          const status = document.createElement('div');
+          status.innerHTML = '<div class="mt-4 p-2 bg-red-100 text-red-800 rounded">❌ Backend not responding</div>';
+          document.querySelector('.max-w-md').appendChild(status);
+        });
+    </script>
+  </body>
+</html>

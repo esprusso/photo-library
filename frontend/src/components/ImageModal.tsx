@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { imageApi, tagApi, categoryApi } from '../services/api'
 import CreatableSelect from 'react-select/creatable'
@@ -90,10 +90,59 @@ export default function ImageModal({ imageId, onClose, onNavigate }: ImageModalP
   if (!imageId) return null
 
   return (
-    <div className={`fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4 ${
+    <div className={`fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-0 md:p-4 ${
       isClosing ? 'opacity-0' : 'opacity-100'
     } transition-opacity duration-200`}>
-      <div className={`bg-white dark:bg-gray-900 rounded-lg max-w-7xl w-full max-h-[90vh] h-[90vh] overflow-hidden flex transform ${
+      {/* Mobile Layout */}
+      <div className={`md:hidden bg-black w-full h-full flex flex-col transform ${
+        isClosing ? 'scale-95' : 'scale-100'
+      } transition-transform duration-200`}>
+        {/* Mobile Header */}
+        <div className="flex justify-between items-center p-4 bg-black bg-opacity-75 z-10">
+          <button
+            onClick={handleClose}
+            className="text-white hover:text-gray-300 bg-black bg-opacity-50 rounded-full p-2"
+            aria-label="Close modal"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Mobile Media Content */}
+        <div className="flex-1 flex items-center justify-center bg-black p-4 relative">
+          {isLoading ? (
+            <div className="text-white text-lg">Loading...</div>
+          ) : image ? (
+            <div className="w-full h-full flex items-center justify-center">
+              {(() => {
+                const ext = (image.filename || '').toLowerCase().split('.').pop()
+                const isVideo = ext === 'webm' || ext === 'mp4' || ext === 'm4v' || ext === 'mov' || ext === 'avi'
+                if (isVideo) {
+                  return <VideoPlayer src={`/api/images/file/${image.id}`} isMobile={true} />
+                }
+                return (
+                  <img
+                    src={`/api/images/file/${image.id}`}
+                    alt={image.filename}
+                    className="max-w-full max-h-full w-auto h-auto object-contain"
+                    onError={(e) => {
+                      const img = e.currentTarget as HTMLImageElement
+                      img.src = image.thumbnail_path
+                    }}
+                  />
+                )
+              })()}
+            </div>
+          ) : (
+            <div className="text-white text-lg">Image not found</div>
+          )}
+        </div>
+      </div>
+
+      {/* Desktop Layout */}
+      <div className={`hidden md:flex bg-white dark:bg-gray-900 rounded-lg max-w-7xl w-full max-h-[90vh] h-[90vh] overflow-hidden transform ${
         isClosing ? 'scale-95' : 'scale-100'
       } transition-transform duration-200`}>
         
@@ -113,21 +162,30 @@ export default function ImageModal({ imageId, onClose, onNavigate }: ImageModalP
             <div className="text-white text-lg">Loading...</div>
           ) : image ? (
             <div className="w-full h-full flex items-center justify-center overflow-hidden">
-              <img
-                src={`/api/image-file/${image.id}`}
-                alt={image.filename}
-                className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg shadow-2xl"
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  width: 'auto',
-                  height: 'auto'
-                }}
-                onError={(e) => {
-                  const img = e.currentTarget as HTMLImageElement
-                  img.src = image.thumbnail_path
-                }}
-              />
+              {(() => {
+                const ext = (image.filename || '').toLowerCase().split('.').pop()
+                const isVideo = ext === 'webm' || ext === 'mp4' || ext === 'm4v' || ext === 'mov' || ext === 'avi'
+                if (isVideo) {
+                  return <VideoPlayer src={`/api/images/file/${image.id}`} isMobile={false} />
+                }
+                return (
+                  <img
+                    src={`/api/images/file/${image.id}`}
+                    alt={image.filename}
+                    className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg shadow-2xl"
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      width: 'auto',
+                      height: 'auto'
+                    }}
+                    onError={(e) => {
+                      const img = e.currentTarget as HTMLImageElement
+                      img.src = image.thumbnail_path
+                    }}
+                  />
+                )
+              })()}
             </div>
           ) : (
             <div className="text-white text-lg">Image not found</div>
@@ -248,7 +306,7 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
   }
   const handleDownload = () => {
     const link = document.createElement('a')
-    link.href = `/api/image-file/${image.id}?download=true`
+    link.href = `/api/images/file/${image.id}?download=true`
     link.download = image.filename
     document.body.appendChild(link)
     link.click()
@@ -557,5 +615,76 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
         </div>
       </section>
     </div>
+  )
+}
+
+// Simple video player component for desktop scrubbing fix
+function VideoPlayer({ src, isMobile }: { src: string; isMobile?: boolean }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [isMobileViewport, setIsMobileViewport] = useState(window.innerWidth < 768)
+  
+  useEffect(() => {
+    const handleResize = () => setIsMobileViewport(window.innerWidth < 768)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+  
+  // Only render video element if this is the active player for current viewport
+  const shouldRenderVideo = isMobile === undefined || isMobile === isMobileViewport
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !shouldRenderVideo) return
+
+    // Change the source
+    video.src = src
+    video.load()
+    
+    // Apply persisted settings
+    try {
+      const storedVol = localStorage.getItem('playerVolume')
+      if (storedVol != null) {
+        const vol = Math.max(0, Math.min(1, parseFloat(storedVol)))
+        if (!Number.isNaN(vol)) video.volume = vol
+      }
+      
+      const storedMuted = localStorage.getItem('playerMuted')
+      if (storedMuted != null) {
+        video.muted = storedMuted === 'true'
+      }
+    } catch {}
+
+    const onVolumeChange = () => {
+      try {
+        localStorage.setItem('playerVolume', String(video.volume))
+        localStorage.setItem('playerMuted', video.muted ? 'true' : 'false')
+      } catch {}
+    }
+    
+    video.addEventListener('volumechange', onVolumeChange)
+    
+    return () => {
+      video.removeEventListener('volumechange', onVolumeChange)
+    }
+  }, [src, shouldRenderVideo])
+
+  // Don't render video element if not the active player (prevents dual audio)
+  if (!shouldRenderVideo) {
+    return <div className="max-w-full max-h-full w-auto h-auto bg-black rounded-lg shadow-2xl" />
+  }
+
+  return (
+    <video
+      ref={videoRef}
+      className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg shadow-2xl bg-black"
+      controls
+      controlsList="nodownload"
+      preload="auto"
+      playsInline
+      autoPlay
+      loop
+      muted
+      tabIndex={0}
+    />
   )
 }

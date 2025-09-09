@@ -1,3 +1,4 @@
+import os
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, Float, Table, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -57,9 +58,78 @@ class Image(Base):
     
     @property
     def thumbnail_path(self):
+        # Check if we should serve originals directly
+        serve_originals = os.getenv('SERVE_ORIGINALS_AS_THUMBNAILS', 'false').lower() == 'true'
+        if serve_originals:
+            # Serve the original via the correct images file endpoint
+            return f"/api/images/file/{self.id}"
         return f"/thumbnails/{self.id}.jpg"
     
+    @property
+    def thumbnail_paths(self):
+        """Get all available thumbnail paths"""
+        # Check if we should serve originals directly
+        serve_originals = os.getenv('SERVE_ORIGINALS_AS_THUMBNAILS', 'false').lower() == 'true'
+        if serve_originals:
+            # For GIF files, serve the original. For others, serve via image-file endpoint
+            return {'1x': f"/api/images/file/{self.id}"}
+        
+        try:
+            from backend.services.enhanced_thumbnail_generator import EnhancedThumbnailGenerator
+            generator = EnhancedThumbnailGenerator()
+            paths = generator.get_thumbnail_paths(self.id)
+            if paths:
+                return paths
+        except Exception as e:
+            print(f"DEBUG: EnhancedThumbnailGenerator error for image {self.id}: {e}")
+        
+        # Fallback to standard thumbnail - check if it exists
+        thumbnails_dir = os.getenv("THUMBNAILS_DIR", "/thumbnails")
+        standard_path = os.path.join(thumbnails_dir, f"{self.id}.jpg")
+        
+        if os.path.exists(standard_path):
+            return {'1x': f"/thumbnails/{self.id}.jpg"}
+        else:
+            print(f"DEBUG: Standard thumbnail missing for image {self.id}: {standard_path}")
+            return {}
+    
+    @property
+    def animated_preview_paths(self):
+        """Get animated preview paths if available"""
+        try:
+            from backend.services.enhanced_thumbnail_generator import EnhancedThumbnailGenerator
+            generator = EnhancedThumbnailGenerator()
+            paths = generator.get_animated_preview_paths(self.id)
+            if paths:
+                return paths
+        except Exception as e:
+            print(f"DEBUG: EnhancedThumbnailGenerator animated preview error for image {self.id}: {e}")
+        
+        return {}
+    
+    @property
+    def is_animated(self):
+        """Check if this image is animated based on file extension"""
+        if not self.filename:
+            return False
+        ext = os.path.splitext(self.filename)[1].lower()
+        return ext == '.gif'
+    
     def to_dict(self):
+        # Get thumbnail paths with fallback
+        try:
+            thumbnail_paths = self.thumbnail_paths
+        except Exception as e:
+            print(f"Error getting thumbnail_paths for image {self.id}: {e}")
+            thumbnail_paths = {"1x": self.thumbnail_path}
+        
+        # Get animated preview paths with fallback  
+        try:
+            animated_preview_paths = self.animated_preview_paths
+        except Exception as e:
+            print(f"Error getting animated_preview_paths for image {self.id}: {e}")
+            animated_preview_paths = {}
+        
         return {
             "id": self.id,
             "path": self.path,
@@ -83,6 +153,9 @@ class Image(Base):
             "modified_at": self.modified_at.isoformat() if self.modified_at else None,
             "indexed_at": self.indexed_at.isoformat() if self.indexed_at else None,
             "thumbnail_path": self.thumbnail_path,
+            "thumbnail_paths": thumbnail_paths,
+            "animated_preview_paths": animated_preview_paths,
+            "is_animated": self.is_animated,
             "tags": [tag.name for tag in self.tags],
             "categories": [cat.name for cat in self.categories]
         }

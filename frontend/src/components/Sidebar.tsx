@@ -8,17 +8,24 @@ import classNames from 'classnames'
 interface SidebarProps {
   open: boolean
   onClose: () => void
+  collapsed?: boolean
+  onToggleCollapse?: () => void
 }
 
 const navigation = [
-  { name: 'Browse', href: '/browse', icon: GridIcon, current: false },
+  { name: 'GIFs', href: '/browse', icon: GridIcon, current: false },
+  { name: 'Clips', href: '/clips', icon: FilmIcon, current: false },
   { name: 'Tags', href: '/tags', icon: TagIcon, current: false },
-  { name: 'Categories', href: '/categories', icon: FolderIcon, current: false },
-  { name: 'Random', href: '/random', icon: DiceIcon, current: false },
+  { name: 'GIF Categories', href: '/categories', icon: FolderIcon, current: false },
+  { name: 'Clip Categories', href: '/clip-categories', icon: FolderIcon, current: false },
+  { name: 'Random GIF', href: '/random', icon: DiceIcon, current: false },
+  { name: 'Random Clip', href: '/random-clip', icon: FilmIcon, current: false },
+  { name: 'Random Unrated', href: '/random-unrated', icon: TargetIcon, current: false },
+  { name: 'Duplicates', href: '/duplicates', icon: GridIcon, current: false },
   { name: 'Jobs', href: '/jobs', icon: ClockIcon, current: false },
 ]
 
-export default function Sidebar({ open, onClose }: SidebarProps) {
+export default function Sidebar({ open, onClose, collapsed = false, onToggleCollapse }: SidebarProps) {
   const location = useLocation()
   
   const { data: stats } = useQuery('library-stats', libraryApi.getStats, {
@@ -30,18 +37,29 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
   return (
     <>
       {/* Desktop sidebar */}
-      <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
+      <div className={`hidden ${collapsed ? 'lg:hidden' : 'lg:flex'} lg:fixed lg:inset-y-0 lg:w-64 lg:flex-col`}>
         <div className="flex min-h-0 flex-1 flex-col bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
-          <div className="flex flex-1 flex-col overflow-y-auto pt-5 pb-4">
-            {/* Logo */}
-            <div className="flex flex-shrink-0 items-center px-4">
+          <div className="flex flex-1 flex-col overflow-y-auto pt-4 pb-4">
+            {/* Logo + Collapse */}
+            <div className="flex flex-shrink-0 items-center justify-between px-4">
               <img
-                src="/ai-logo.png"
-                alt="Photo Library logo"
+                src="/gif-logo.png"
+                alt="GIF Library logo"
                 className="h-8 w-8 mr-2 rounded"
                 loading="eager"
               />
-              <h1 className="text-xl font-bold text-gray-900 dark:text-white">Photo Library</h1>
+              <h1 className="text-xl font-bold text-gray-900 dark:text-white">GIF Library</h1>
+              <button
+                onClick={onToggleCollapse}
+                className="hidden lg:inline-flex p-1.5 ml-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:text-white dark:hover:bg-gray-700"
+                title="Hide sidebar"
+                aria-label="Hide sidebar"
+              >
+                {/* collapse (chevron-left) icon */}
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M15 6l-6 6 6 6"/>
+                </svg>
+              </button>
             </div>
 
             {/* Navigation */}
@@ -82,8 +100,12 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
                   </h3>
                   <dl className="space-y-1 text-xs text-gray-600 dark:text-gray-300">
                     <div className="flex justify-between">
-                      <dt>Photos:</dt>
-                      <dd className="font-medium">{stats.total_images.toLocaleString()}</dd>
+                      <dt>GIFs:</dt>
+                      <dd className="font-medium">{(stats.gifs ?? stats.total_images).toLocaleString()}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt>Videos:</dt>
+                      <dd className="font-medium">{(stats.videos ?? 0).toLocaleString()}</dd>
                     </div>
                     <div className="flex justify-between">
                       <dt>Tags:</dt>
@@ -171,12 +193,12 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
           <div className="flex h-16 items-center justify-between px-4 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
             <div className="flex items-center">
               <img
-                src="/ai-logo.png"
-                alt="Photo Library logo"
+                src="/gif-logo.png"
+                alt="GIF Library logo"
                 className="h-7 w-7 mr-2 rounded"
                 loading="eager"
               />
-              <h1 className="text-xl font-bold text-gray-900 dark:text-white">Photo Library</h1>
+              <h1 className="text-xl font-bold text-gray-900 dark:text-white">GIF Library</h1>
             </div>
             <button
               onClick={onClose}
@@ -233,6 +255,15 @@ function GridIcon({ className }: { className?: string }) {
   )
 }
 
+function FilmIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+      <path d="M7 3v18M17 3v18M3 7h18M3 17h18" />
+    </svg>
+  )
+}
+
 function TagIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -265,6 +296,16 @@ function DiceIcon({ className }: { className?: string }) {
       <circle cx="15" cy="15" r="1.5"/>
       <circle cx="15" cy="9" r="1.5"/>
       <circle cx="9" cy="15" r="1.5"/>
+    </svg>
+  )
+}
+
+function TargetIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+      <circle cx="12" cy="12" r="10"/>
+      <circle cx="12" cy="12" r="6"/>
+      <circle cx="12" cy="12" r="2"/>
     </svg>
   )
 }
