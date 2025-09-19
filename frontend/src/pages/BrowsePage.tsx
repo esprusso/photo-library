@@ -1,5 +1,5 @@
  
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from 'react-query'
 import { useSearchParams, Link } from 'react-router-dom'
 import { imageApi, libraryApi, jobApi, categoryApi, tagApi } from '../services/api'
@@ -7,6 +7,8 @@ import CreatableSelect from 'react-select/creatable'
 import ImageModal from '../components/ImageModal'
 import StarRating from '../components/StarRating'
 import FavoriteButton from '../components/FavoriteButton'
+import AspectRatioGrid from '../components/AspectRatioGrid'
+import ErrorBoundary from '../components/ErrorBoundary'
 import type { Image, ImageFilters } from '../types'
 
 type GridSize = 'small' | 'medium' | 'large'
@@ -17,15 +19,90 @@ export default function BrowsePage() {
   const [page, setPage] = useState(1)
   const [images, setImages] = useState<Image[]>([])
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null)
+  const [viewHistory, setViewHistory] = useState<number[]>([])
+  const historyIndexRef = useRef(-1)
   const [selectedImages, setSelectedImages] = useState<Set<number>>(new Set())
   const [bulkMode, setBulkMode] = useState(false)
   const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null)
+  const [removingIds, setRemovingIds] = useState<Set<number>>(new Set())
+  const [pendingDeletes, setPendingDeletes] = useState<Record<number, { image: Image; timer: number }>>({})
+  const [toast, setToast] = useState<{ ids: number[] } | null>(null)
+  const [toastTimer, setToastTimer] = useState<number | null>(null)
+  // UI prefs: auto-categorize visibility
+  const [showAutoCategorize, setShowAutoCategorize] = useState<boolean>(() => {
+    const v = localStorage.getItem('ui.showAutoCategorize')
+    return v == null ? true : v === 'true'
+  })
+  const [hoverOutlineEnabled, setHoverOutlineEnabled] = useState<boolean>(() => {
+    const v = localStorage.getItem('ui.hoverOutline')
+    return v == null ? true : v === 'true'
+  })
+  useEffect(() => {
+    const handler = () => {
+      const v = localStorage.getItem('ui.showAutoCategorize')
+      setShowAutoCategorize(v == null ? true : v === 'true')
+    }
+    window.addEventListener('ui-settings-changed', handler as any)
+    return () => window.removeEventListener('ui-settings-changed', handler as any)
+  }, [])
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      const detail = e?.detail || {}
+      if (typeof detail.hoverOutlineEnabled === 'boolean') {
+        setHoverOutlineEnabled(detail.hoverOutlineEnabled)
+      } else {
+        const v = localStorage.getItem('ui.hoverOutline')
+        setHoverOutlineEnabled(v == null ? true : v === 'true')
+      }
+    }
+    window.addEventListener('ui-preferences', handler as any)
+    return () => window.removeEventListener('ui-preferences', handler as any)
+  }, [])
+
+  // Back to Top visibility
+  const [showBackToTop, setShowBackToTop] = useState(false)
+  useEffect(() => {
+    const onScroll = () => {
+      setShowBackToTop(window.scrollY > 600)
+    }
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
   const [gridSize, setGridSize] = useState<GridSize>(() => {
     const saved = localStorage.getItem('gridSize') as GridSize
     return saved && ['small', 'medium', 'large'].includes(saved) ? saved : 'medium'
   })
+  const [packagingJobId, setPackagingJobId] = useState<number | null>(null)
+  const [packagingProgress, setPackagingProgress] = useState<number>(0)
 
-  // Keyboard shortcuts for quick selection
+  useEffect(() => {
+    if (selectedImageId == null) {
+      setViewHistory([])
+      historyIndexRef.current = -1
+      return
+    }
+
+    setViewHistory((prev) => {
+      const currentIdx = historyIndexRef.current
+      if (currentIdx !== -1 && prev[currentIdx] === selectedImageId) {
+        return prev
+      }
+
+      const truncated = currentIdx >= 0 ? prev.slice(0, currentIdx + 1) : []
+      if (truncated[truncated.length - 1] === selectedImageId) {
+        historyIndexRef.current = truncated.length - 1
+        return truncated
+      }
+
+      truncated.push(selectedImageId)
+      historyIndexRef.current = truncated.length - 1
+      return truncated
+    })
+  }, [selectedImageId])
+
+  // Keyboard shortcuts for quick selection + quick rating/favorite on selected image
   useEffect(() => {
     const isTyping = () => {
       const el = document.activeElement as HTMLElement | null
@@ -48,12 +125,128 @@ export default function BrowsePage() {
         e.preventDefault()
         setBulkMode(false)
         setSelectedImages(new Set())
+      } else if (!bulkMode && selectedImageId) {
+        // Quick rating: 1-5
+        if (['1','2','3','4','5'].includes(e.key)) {
+          e.preventDefault()
+          const rating = parseInt(e.key, 10)
+          if (rating >= 1 && rating <= 5) {
+            rateImage.mutate({ imageId: selectedImageId, rating })
+          }
+        } else if (e.key === 'f' || e.key === 'F') {
+          // Quick favorite toggle
+          e.preventDefault()
+          const img = images.find(im => im.id === selectedImageId)
+          if (img) toggleFavorite.mutate({ imageId: img.id, favorite: !img.favorite })
+        }
       }
     }
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [bulkMode, images])
+  }, [bulkMode, images, selectedImageId])
+
+  // Listen for soft deletions from ImageModal to animate removal with undo window
+  useEffect(() => {
+    const onSoftDelete = (e: any) => {
+      const id = e?.detail?.id as number | undefined
+      const img = e?.detail?.image as Image | undefined
+      if (!id || !img) return
+      // Ensure modal (if open) is closed immediately
+      setSelectedImageId((prev) => (prev === id ? null : prev))
+      // Animate out immediately
+      setRemovingIds((prev) => new Set(prev).add(id))
+      // After CSS transition, remove from grid but keep in pending for potential undo
+      const t = window.setTimeout(() => {
+        setImages((prev) => prev.filter((im) => im.id !== id))
+        setSelectedImages((prev) => { const s = new Set(prev); s.delete(id); return s })
+        setRemovingIds((prev) => { const s = new Set(prev); s.delete(id); return s })
+      }, 300)
+      // Schedule finalize delete after 5s unless undone
+      const finalizeTimer = window.setTimeout(async () => {
+        let blacklist = true
+        try {
+          const v = localStorage.getItem('blacklistOnDelete')
+          blacklist = v == null ? true : v === 'true'
+        } catch {}
+        try { await imageApi.deleteImage(id, false, blacklist) } catch {}
+        setPendingDeletes((prev) => { const cp = { ...prev }; delete cp[id]; return cp })
+        // Also refresh stats and list lazily
+        queryClient.invalidateQueries(['images'])
+        queryClient.invalidateQueries('library-stats')
+      }, 5000)
+      setPendingDeletes((prev) => ({ ...prev, [id]: { image: img, timer: finalizeTimer } }))
+      // Show toast for 5s
+      setToast({ ids: [id] })
+      if (toastTimer) window.clearTimeout(toastTimer)
+      const tt = window.setTimeout(() => setToast(null), 5000)
+      setToastTimer(tt)
+    }
+    window.addEventListener('ai-image-soft-delete' as any, onSoftDelete as any)
+    return () => window.removeEventListener('ai-image-soft-delete' as any, onSoftDelete as any)
+  }, [])
+
+  const undoDeleteBatch = (ids: number[]) => {
+    ids.forEach((id) => {
+      const pending = pendingDeletes[id]
+      if (!pending) return
+      // Cancel finalize timer and restore image
+      window.clearTimeout(pending.timer)
+      setPendingDeletes((prev) => { const cp = { ...prev }; delete cp[id]; return cp })
+      setImages((prev) => [pending.image, ...prev])
+    })
+    setToast(null)
+    if (toastTimer) window.clearTimeout(toastTimer)
+  }
+
+  const bulkSoftDelete = (ids: number[]) => {
+    if (!ids.length) return
+    // Close modal if any selected image is shown
+    setSelectedImageId((prev) => (prev && ids.includes(prev) ? null : prev))
+    // Animate all out
+    setRemovingIds((prev) => {
+      const s = new Set(prev)
+      ids.forEach((id) => s.add(id))
+      return s
+    })
+    // After transition, remove and clean selection
+    window.setTimeout(() => {
+      setImages((prev) => prev.filter((im) => !ids.includes(im.id)))
+      setSelectedImages((prev) => {
+        const s = new Set(prev)
+        ids.forEach((id) => s.delete(id))
+        return s
+      })
+      setRemovingIds((prev) => {
+        const s = new Set(prev)
+        ids.forEach((id) => s.delete(id))
+        return s
+      })
+    }, 300)
+    // Set up pending deletes and timers
+    const imgsById = new Map(images.map((im) => [im.id, im]))
+    ids.forEach((id) => {
+      const img = imgsById.get(id)
+      if (!img) return
+      const finalizeTimer = window.setTimeout(async () => {
+        let blacklist = true
+        try {
+          const v = localStorage.getItem('blacklistOnDelete')
+          blacklist = v == null ? true : v === 'true'
+        } catch {}
+        try { await imageApi.deleteImage(id, false, blacklist) } catch {}
+        setPendingDeletes((prev) => { const cp = { ...prev }; delete cp[id]; return cp })
+        queryClient.invalidateQueries(['images'])
+        queryClient.invalidateQueries('library-stats')
+      }, 5000)
+      setPendingDeletes((prev) => ({ ...prev, [id]: { image: img, timer: finalizeTimer } }))
+    })
+    // Toast for batch
+    setToast({ ids: [...ids] })
+    if (toastTimer) window.clearTimeout(toastTimer)
+    const tt = window.setTimeout(() => setToast(null), 5000)
+    setToastTimer(tt)
+  }
 
   const getGridClasses = (size: GridSize) => {
     switch (size) {
@@ -78,6 +271,19 @@ export default function BrowsePage() {
         return 'aspect-[4/3]'   // Larger, more rectangular
       default:
         return 'aspect-square'
+    }
+  }
+
+  const getPreviewSize = (size: GridSize) => {
+    switch (size) {
+      case 'small':
+        return 512
+      case 'medium':
+        return 768
+      case 'large':
+        return 1280
+      default:
+        return 768
     }
   }
 
@@ -110,20 +316,61 @@ export default function BrowsePage() {
     }
   }
 
+  // Convert grid size to tile width for AspectRatioGrid
+  const getTileWidth = (size: GridSize) => {
+    switch (size) {
+      case 'small':
+        return 150
+      case 'medium':
+        return 220
+      case 'large':
+        return 300
+      default:
+        return 220
+    }
+  }
+
   const handleNavigate = (direction: 'prev' | 'next') => {
     if (!selectedImageId || !images.length) return
 
-    const currentIndex = images.findIndex(img => img.id === selectedImageId)
-    if (currentIndex === -1) return
-
-    let newIndex: number
-    if (direction === 'prev') {
-      newIndex = currentIndex > 0 ? currentIndex - 1 : images.length - 1
-    } else {
-      newIndex = currentIndex < images.length - 1 ? currentIndex + 1 : 0
+    if (direction === 'prev' && historyIndexRef.current > 0) {
+      const newIndex = historyIndexRef.current - 1
+      const previousId = viewHistory[newIndex]
+      if (previousId) {
+        historyIndexRef.current = newIndex
+        setSelectedImageId(previousId)
+        return
+      }
     }
 
-    setSelectedImageId(images[newIndex].id)
+    if (
+      direction === 'next' &&
+      historyIndexRef.current >= 0 &&
+      historyIndexRef.current < viewHistory.length - 1
+    ) {
+      const newIndex = historyIndexRef.current + 1
+      const nextId = viewHistory[newIndex]
+      if (nextId) {
+        historyIndexRef.current = newIndex
+        setSelectedImageId(nextId)
+        return
+      }
+    }
+
+    const currentIndex = images.findIndex(img => img.id === selectedImageId)
+    if (currentIndex === -1) {
+      // If current image is not found in the list, don't navigate
+      return
+    }
+
+    const sequentialIndex = direction === 'prev'
+      ? (currentIndex > 0 ? currentIndex - 1 : null)
+      : (currentIndex < images.length - 1 ? currentIndex + 1 : null)
+
+    if (sequentialIndex == null) return
+    const target = images[sequentialIndex]
+    if (!target) return
+    setSelectedImageId(target.id)
   }
 
   const handleImageClick = (imageId: number, event: React.MouseEvent) => {
@@ -328,10 +575,12 @@ export default function BrowsePage() {
   const rating = searchParams.get('rating')
   const favorite = searchParams.get('favorite')
   const categories = searchParams.get('categories')
+  const modelName = searchParams.get('model_name')
   const tagsParam = searchParams.get('tags')
   if (rating) filters.rating = parseInt(rating)
   if (favorite === 'true') filters.favorite = true
   if (categories) filters.categories = [categories]
+  if (modelName) (filters as any).model_name = modelName
   if (tagsParam) filters.tags = tagsParam.split(',').map(t => t.trim()).filter(Boolean)
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery(
@@ -353,6 +602,30 @@ export default function BrowsePage() {
   const thumbnailJobs = useQuery(['jobs', 'thumbnailing', 'running'], () => jobApi.getJobs('thumbnailing', 'running'), {
     refetchInterval: 3000,
   })
+  // Poll packaging job progress
+  useQuery(['job', 'category-zip', packagingJobId], () => jobApi.getJob(packagingJobId as number), {
+    enabled: !!packagingJobId,
+    refetchInterval: 1000,
+    onSuccess: (job: any) => {
+      if (!job) return
+      setPackagingProgress(job.progress || 0)
+      if (job.status === 'completed' && job.result?.download_url) {
+        // Trigger download
+        const link = document.createElement('a')
+        link.href = job.result.download_url
+        link.download = ''
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+        setPackagingJobId(null)
+        setPackagingProgress(0)
+      } else if (job.status === 'failed') {
+        alert(job.error_message || 'Failed to package category')
+        setPackagingJobId(null)
+        setPackagingProgress(0)
+      }
+    }
+  })
 
   const scanMutation = useMutation(libraryApi.scanLibrary, {
     onSuccess: async () => {
@@ -370,6 +643,38 @@ export default function BrowsePage() {
       await refetch()
     },
   })
+
+  const toggleFavorite = useMutation(
+    async ({ imageId, favorite }: { imageId: number, favorite: boolean }) => 
+      await imageApi.toggleFavorite(imageId),
+    {
+      onSuccess: (_, { imageId }) => {
+        // Optimistically update the image in our state
+        setImages(prevImages => 
+          prevImages.map(img => 
+            img.id === imageId ? { ...img, favorite: !img.favorite } : img
+          )
+        )
+        queryClient.invalidateQueries(['images'])
+      }
+    }
+  )
+
+  const rateImage = useMutation(
+    async ({ imageId, rating }: { imageId: number, rating: number }) => 
+      await imageApi.rateImage(imageId, rating),
+    {
+      onSuccess: (_, { imageId, rating }) => {
+        // Optimistically update the image in our state
+        setImages(prevImages => 
+          prevImages.map(img => 
+            img.id === imageId ? { ...img, rating } : img
+          )
+        )
+        queryClient.invalidateQueries(['images'])
+      }
+    }
+  )
 
 
 
@@ -403,8 +708,8 @@ export default function BrowsePage() {
         const scrollHeight = document.documentElement.scrollHeight
         const clientHeight = window.innerHeight
         
-        // Load more when user is 300px from bottom
-        if (scrollTop + clientHeight >= scrollHeight - 300) {
+        // Load more when user is 800px from bottom to reduce stutter
+        if (scrollTop + clientHeight >= scrollHeight - 800) {
           setPage(prevPage => prevPage + 1)
         }
       }, 100) // Throttle to 100ms
@@ -507,14 +812,16 @@ export default function BrowsePage() {
           >
             {bulkMode ? 'Exit Selection' : 'Select Images'}
           </button>
-          <button
-            onClick={() => categorizeMutation.mutate()}
-            className="px-3 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
-            disabled={categorizeMutation.isLoading}
-            title="Auto-categorize images based on folder structure"
-          >
-            {categorizeMutation.isLoading ? 'Categorizing…' : '📁 Auto-Categorize'}
-          </button>
+          {showAutoCategorize && (
+            <button
+              onClick={() => categorizeMutation.mutate()}
+              className="px-3 py-2 rounded-md bg-green-600 text-white text-sm hover:bg-green-700 disabled:opacity-60"
+              disabled={categorizeMutation.isLoading}
+              title="Auto-categorize images based on folder structure"
+            >
+              {categorizeMutation.isLoading ? 'Categorizing…' : '📁 Auto-Categorize'}
+            </button>
+          )}
           <button
             onClick={() => scanMutation.mutate()}
             className="px-3 py-2 rounded-md bg-primary-600 text-white text-sm hover:bg-primary-700 disabled:opacity-60"
@@ -522,6 +829,37 @@ export default function BrowsePage() {
           >
             {scanMutation.isLoading ? 'Scanning…' : 'Scan Library'}
           </button>
+          {(() => {
+            const catName = searchParams.get('categories')
+            if (!catName) return null
+            const cat = (allCategories || []).find((c: any) => c.name === catName)
+            return (
+              <button
+                onClick={async () => {
+                  if (!cat) return
+                  try {
+                    const { job_id } = await categoryApi.downloadCategoryAsync(cat.id)
+                    setPackagingJobId(job_id)
+                  } catch (e: any) {
+                    const msg = e?.response?.data?.detail || e?.message || 'Failed to start category packaging'
+                    alert(msg)
+                  }
+                }}
+                disabled={!cat || !!packagingJobId}
+                className="px-3 py-2 rounded-md bg-gray-200 text-gray-800 hover:bg-gray-300 disabled:opacity-50 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600 text-sm flex items-center gap-2"
+                title={cat ? `Download all originals in ${cat.name}` : 'Loading category…'}
+              >
+                {packagingJobId ? (
+                  <>
+                    <span className="inline-block h-3 w-3 rounded-full border-2 border-gray-900 border-t-transparent animate-spin" />
+                    Packaging… {packagingProgress}%
+                  </>
+                ) : (
+                  'Download Category'
+                )}
+              </button>
+            )
+          })()}
         </div>
       </div>
 
@@ -548,68 +886,38 @@ export default function BrowsePage() {
       ) : images.length === 0 ? (
         <div className="text-gray-600 dark:text-gray-300">No images found. Try Scan Library.</div>
       ) : (
-        <div className={getGridClasses(gridSize)}>
-          {images.map((img) => (
-            <div 
-              key={img.id} 
-              className={`bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden cursor-pointer hover:shadow-lg transition-all ${
-                bulkMode && selectedImages.has(img.id) ? 'ring-2 ring-blue-500' : ''
-              }`}
-              onClick={(e) => handleImageClick(img.id, e)}
-            >
-              <div className={`${getThumbnailClasses(gridSize)} bg-gray-100 dark:bg-gray-700 overflow-hidden relative`}>
-                <img
-                  src={img.thumbnail_path}
-                  alt={img.filename}
-                  onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).style.display = 'none'
-                  }}
-                  className="w-full h-full object-cover hover:scale-105 transition-transform duration-200"
-                  loading="lazy"
-                />
-                
-                {/* Bulk selection checkbox */}
-                {bulkMode && (
-                  <div className="absolute top-2 left-2 z-10">
-                    <input
-                      type="checkbox"
-                      checked={selectedImages.has(img.id)}
-                      onChange={() => toggleImageSelection(img.id)}
-                      className="w-5 h-5 text-blue-600 bg-white border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                )}
-                
-                {/* Favorite indicator */}
-                {img.favorite && (
-                  <div className={`absolute top-2 ${bulkMode ? 'right-2' : 'right-2'}`}>
-                    <FavoriteButton isFavorite={true} readonly size="sm" />
-                  </div>
-                )}
-                
-                {/* Rating indicator */}
-                {img.rating > 0 && (
-                  <div className="absolute bottom-2 left-2 bg-black bg-opacity-60 rounded px-1">
-                    <StarRating rating={img.rating} readonly size="sm" />
-                  </div>
-                )}
-              </div>
-              <div className={getContentClasses(gridSize).padding}>
-                <div 
-                  className={`${getContentClasses(gridSize).filename} text-gray-700 dark:text-gray-200 truncate`} 
-                  title={img.filename}
-                >
-                  {img.filename}
-                </div>
-                {gridSize !== 'small' && (
-                  <div className={`${getContentClasses(gridSize).dimensions} text-gray-500`}>
-                    {img.width ?? '?'}×{img.height ?? '?'}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
+        <ErrorBoundary>
+          <AspectRatioGrid
+            images={images}
+            tileWidth={getTileWidth(gridSize)}
+            bulkMode={bulkMode}
+            selectedImages={selectedImages}
+            onImageClick={handleImageClick}
+            onToggleSelection={toggleImageSelection}
+            onQuickFavorite={(imageId) => {
+              // Quick favorite toggle
+              const image = images.find(img => img.id === imageId)
+              if (image) {
+                toggleFavorite.mutate({ imageId, favorite: !image.favorite })
+              }
+            }}
+            onQuickRate={(imageId, rating) => {
+              // Quick rating
+              rateImage.mutate({ imageId, rating })
+            }}
+            hoverOutlineEnabled={hoverOutlineEnabled}
+          />
+        </ErrorBoundary>
+      )}
+
+      {/* Undo Toast */}
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900/80 text-white text-sm px-4 py-2 rounded-lg shadow-lg flex items-center gap-3 z-50">
+          <span>{toast.ids.length === 1 ? 'Image deleted' : `${toast.ids.length} images deleted`}</span>
+          <button
+            onClick={() => undoDeleteBatch(toast.ids)}
+            className="px-2 py-1 rounded bg-white text-gray-900 hover:bg-gray-100"
+          >Undo</button>
         </div>
       )}
 
@@ -700,6 +1008,13 @@ export default function BrowsePage() {
                 >
                   {bulkDownloadMutation.isLoading ? '⏳' : '📥'} Download
                 </button>
+                <button
+                  onClick={() => bulkSoftDelete(Array.from(selectedImages))}
+                  className="px-3 py-1 text-sm rounded bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900 dark:text-red-300 dark:hover:bg-red-800 transition-colors"
+                  title="Delete selected images (Undo within 5s)"
+                >
+                  🗑️ Delete
+                </button>
                 
 
                 {/* Bulk Tagging */}
@@ -783,9 +1098,19 @@ export default function BrowsePage() {
 
       {/* Image Modal */}
       <ImageModal
+        key={selectedImageId} // Force re-render when imageId changes
         imageId={selectedImageId}
         onClose={() => setSelectedImageId(null)}
         onNavigate={handleNavigate}
+        onDeleted={(id) => {
+          // In case modal delete is used outside of window event flow
+          setRemovingIds((prev) => new Set(prev).add(id))
+          setTimeout(() => {
+            setImages((prev) => prev.filter((im) => im.id !== id))
+            setSelectedImages((prev) => { const s = new Set(prev); s.delete(id); return s })
+            setRemovingIds((prev) => { const s = new Set(prev); s.delete(id); return s })
+          }, 320)
+        }}
       />
 
       {/* Floating Select FAB */}
@@ -810,6 +1135,21 @@ export default function BrowsePage() {
           </span>
         )}
       </button>
+
+      {/* Back to Top FAB */}
+      {showBackToTop && (
+        <button
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+          className="fixed right-4 md:right-6 bottom-20 z-40 rounded-full shadow-lg focus:outline-none transition transform hover:scale-105 bg-gray-900 text-white dark:bg-gray-200 dark:text-gray-900"
+          style={{ padding: '10px 12px' }}
+          title="Back to top"
+          aria-label="Back to top"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+            <path d="M12 5l7 7-1.4 1.4L13 8.8V20h-2V8.8l-4.6 4.6L5 12z" />
+          </svg>
+        </button>
+      )}
     </div>
   )
 }

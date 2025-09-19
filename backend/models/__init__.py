@@ -3,6 +3,8 @@ from .image import Image
 from .tag import Tag
 from .category import Category
 from .job import Job
+from .duplicate_ignore import DuplicateIgnore
+from .purged_image import PurgedImage
 
 __all__ = [
     "Base",
@@ -12,5 +14,7 @@ __all__ = [
     "Image",
     "Tag",
     "Category",
-    "Job"
+    "Job",
+    "DuplicateIgnore",
+    "PurgedImage"
 ]

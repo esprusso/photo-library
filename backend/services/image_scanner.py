@@ -4,12 +4,13 @@ import re
 from datetime import datetime
 from typing import List, Set, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 
-from backend.models import Image, Job, Category
+from backend.models import Image, Job, Category, PurgedImage
 from backend.services.metadata_extractor import MetadataExtractor
 from backend.services.thumbnail_generator import ThumbnailGenerator
 from backend.services.media_manager import MediaManager
+from backend.utils.file_fingerprint import compute_file_hash
 
 
 class ImageScanner:
@@ -83,6 +84,12 @@ class ImageScanner:
             
             # Clean up orphaned records
             orphaned_count = self._cleanup_orphaned_images(db)
+            # Also clean up orphaned thumbnails to prevent stale ID->thumbnail mismatches
+            try:
+                _ = self.thumbnail_generator.cleanup_orphaned_thumbnails(db)
+            except Exception:
+                # Non-fatal; continue job completion
+                pass
             
             if job_id:
                 job.status = 'completed'
@@ -132,8 +139,30 @@ class ImageScanner:
         try:
             stat = os.stat(image_path)
             file_mtime = datetime.fromtimestamp(stat.st_mtime)
+            file_size = stat.st_size
         except OSError:
             return 'error'
+        
+        # Check if this file is blacklisted (only for new images)
+        file_hash = None
+        if not existing_image:
+            filename = os.path.basename(image_path)
+            blacklisted = db.query(PurgedImage).filter(
+                PurgedImage.filename == filename,
+                or_(PurgedImage.file_size == None, PurgedImage.file_size == file_size)
+            ).first()
+
+            if not blacklisted:
+                try:
+                    file_hash = compute_file_hash(image_path)
+                except Exception:
+                    file_hash = None
+                if file_hash:
+                    blacklisted = db.query(PurgedImage).filter(PurgedImage.file_hash == file_hash).first()
+
+            if blacklisted:
+                print(f"Skipping blacklisted file: {image_path}")
+                return 'blacklisted'
         
         # If image exists and hasn't been modified, skip
         if existing_image and existing_image.modified_at and existing_image.modified_at >= file_mtime:
@@ -151,7 +180,8 @@ class ImageScanner:
             self.media_manager.update_image_local_path(db, existing_image)
             db.commit()
             # Generate thumbnail for updated image
-            self.thumbnail_generator.generate_single_thumbnail(existing_image)
+            # Force regeneration so stale thumbnails don't mismatch updated originals
+            self.thumbnail_generator.generate_single_thumbnail(existing_image, force_regenerate=True)
             return 'updated'
         else:
             # Create new image record
@@ -314,6 +344,79 @@ class ImageScanner:
             db.commit()
         
         return orphaned_count
+
+    def cleanup_orphaned_images(self, db: Session, job_id: Optional[int] = None) -> dict:
+        """Public method to clean up orphaned images with job tracking"""
+        if job_id:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job:
+                job.status = 'running'
+                job.started_at = datetime.now()
+                db.commit()
+        
+        try:
+            # Get all images for progress tracking
+            images = db.query(Image).all()
+            total_images = len(images)
+            processed = 0
+            orphaned_count = 0
+            orphaned_paths = []
+            
+            # Check each image
+            for image in images:
+                processed += 1
+                
+                # Update job progress if we have one
+                if job_id:
+                    job = db.query(Job).filter(Job.id == job_id).first()
+                    if job:
+                        job.processed_items = processed
+                        job.progress = int((processed / total_images) * 100) if total_images > 0 else 100
+                        db.commit()
+                
+                # Check if file exists using path utilities
+                from backend.utils.path_utils import get_container_path
+                container_path = get_container_path(image.path)
+                
+                if not os.path.exists(container_path):
+                    orphaned_paths.append(image.path)
+                    db.delete(image)
+                    orphaned_count += 1
+            
+            # Commit all deletions
+            if orphaned_count > 0:
+                db.commit()
+            
+            # Update job completion
+            if job_id:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    job.status = 'completed'
+                    job.completed_at = datetime.now()
+                    job.progress = 100
+                    job.result = {
+                        'total_checked': total_images,
+                        'orphaned_removed': orphaned_count,
+                        'orphaned_paths': orphaned_paths[:100]  # Limit to first 100 for UI
+                    }
+                    db.commit()
+            
+            return {
+                'total_checked': total_images,
+                'orphaned_removed': orphaned_count,
+                'orphaned_paths': orphaned_paths
+            }
+            
+        except Exception as e:
+            # Update job with error
+            if job_id:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    job.status = 'failed'
+                    job.error_message = str(e)
+                    job.completed_at = datetime.now()
+                    db.commit()
+            raise e
     
     def get_scan_stats(self, db: Session) -> dict:
         """Get statistics about the current library"""

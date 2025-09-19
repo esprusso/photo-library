@@ -5,14 +5,17 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
+import time
 
 from backend.models import get_db, Base, engine, Image, Tag, Category, Job, SessionLocal
 from backend.models.schema_upgrade import ensure_schema
-from backend.api import images, tags, categories, jobs
+from backend.api import images, tags, categories, jobs, watch, system
 from backend.services.image_scanner import ImageScanner
 from backend.services.thumbnail_generator import ThumbnailGenerator
 from backend.services.media_manager import MediaManager
-from PIL import ImageFile
+from backend.services.import_watcher import get_import_watcher
+from backend.utils.path_utils import get_container_path, get_container_root
+from PIL import ImageFile, Image as PILImage
 
 # Support HEIC/HEIF if pillow-heif is installed
 try:
@@ -48,6 +51,8 @@ app.include_router(images.router, prefix="/api/images", tags=["images"])
 app.include_router(tags.router, prefix="/api/tags", tags=["tags"])
 app.include_router(categories.router, prefix="/api/categories", tags=["categories"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])
+app.include_router(watch.router, prefix="/api/watch", tags=["watch"])
+app.include_router(system.router, prefix="/api", tags=["system"])
 
 # Also include without /api prefix for backward compatibility and direct access
 app.include_router(images.router, prefix="/images", tags=["images-direct"])
@@ -57,15 +62,18 @@ app.include_router(jobs.router, prefix="/jobs", tags=["jobs-direct"])
 
 # Ensure required directories exist (important for NAS/local)
 THUMBNAILS_DIR = os.getenv("THUMBNAILS_DIR", "/thumbnails")
+PREVIEWS_DIR = os.getenv("PREVIEWS_DIR", "/previews")
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "/downloads")
 MEDIA_DIR = os.getenv("MEDIA_DIR", "/data/media")
 
 os.makedirs(THUMBNAILS_DIR, exist_ok=True)
+os.makedirs(PREVIEWS_DIR, exist_ok=True)
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # Static file serving
 app.mount("/thumbnails", StaticFiles(directory=THUMBNAILS_DIR), name="thumbnails")
+app.mount("/previews", StaticFiles(directory=PREVIEWS_DIR), name="previews")
 app.mount("/download", StaticFiles(directory=DOWNLOADS_DIR), name="download")
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 
@@ -155,39 +163,29 @@ def _get_image_serving_path(image: Image) -> Optional[str]:
     else:
         print(f"DEBUG: ❌ Original path does not exist: {image.path}")
     
-    # Check if path needs mapping from host to container
-    if image.path.startswith('/volume1/Heritage/AI Art'):
-        container_path = image.path.replace('/volume1/Heritage/AI Art', '/library')
-        print(f"DEBUG: Trying AI Art mapped path: {container_path}")
-        if os.path.exists(container_path):
-            print(f"DEBUG: ✅ Using AI Art mapped path: {container_path}")
-            return container_path
+    mapped = get_container_path(image.path)
+    if mapped and mapped != image.path:
+        print(f"DEBUG: Trying mapped path: {mapped}")
+        if os.path.exists(mapped):
+            print(f"DEBUG: ✅ Using mapped path: {mapped}")
+            return mapped
         else:
-            print(f"DEBUG: ❌ AI Art mapped path does not exist: {container_path}")
-    elif image.path.startswith('/volume1/Heritage/Photos'):
-        container_path = image.path.replace('/volume1/Heritage/Photos', '/library')
-        print(f"DEBUG: Trying Heritage Photos mapped path: {container_path}")
-        if os.path.exists(container_path):
-            print(f"DEBUG: ✅ Using Heritage Photos mapped path: {container_path}")
-            return container_path
+            print(f"DEBUG: ❌ Mapped path does not exist: {mapped}")
+    elif mapped:
+        print(f"DEBUG: Checking mapped path: {mapped}")
+        if os.path.exists(mapped):
+            print(f"DEBUG: ✅ Using mapped path: {mapped}")
+            return mapped
         else:
-            print(f"DEBUG: ❌ Heritage Photos mapped path does not exist: {container_path}")
-    
-    # Check if path is already using container mount point but doesn't exist
-    if image.path.startswith('/library'):
-        print(f"DEBUG: Checking container library path: {image.path}")
-        if os.path.exists(image.path):
-            print(f"DEBUG: ✅ Using existing library path: {image.path}")
-            return image.path
-        else:
-            print(f"DEBUG: ❌ Library path does not exist: {image.path}")
-    
+            print(f"DEBUG: ❌ Mapped path does not exist: {mapped}")
+
     # List what's actually in /library to debug
     try:
-        library_contents = os.listdir('/library')[:10]  # First 10 items
-        print(f"DEBUG: Contents of /library: {library_contents}")
+        mount_root = get_container_root()
+        library_contents = os.listdir(mount_root)[:10]  # First 10 items
+        print(f"DEBUG: Contents of {mount_root}: {library_contents}")
     except Exception as e:
-        print(f"DEBUG: Error listing /library: {e}")
+        print(f"DEBUG: Error listing {mount_root}: {e}")
     
     print(f"DEBUG: ❌ No valid path found for image {image.id}")
     return None
@@ -206,6 +204,64 @@ def _get_media_type(filename: str) -> str:
         'tif': 'image/tiff'
     }
     return media_types.get(ext, 'application/octet-stream')
+
+@app.get("/preview-file/{image_id}")
+async def serve_preview_file(
+    image_id: int,
+    size: int = Query(1024, ge=256, le=2048),
+    db: Session = Depends(get_db)
+):
+    """Serve a medium-sized preview image, generated and cached on demand.
+    The longest side will be scaled to `size` pixels, preserving aspect ratio.
+    """
+    image = db.query(Image).filter(Image.id == image_id).first()
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    src_path = _get_image_serving_path(image)
+    if not src_path or not os.path.exists(src_path):
+        raise HTTPException(status_code=404, detail="Source image not accessible")
+
+    # Use size in filename so multiple sizes can coexist
+    preview_filename = f"{image_id}_{size}.jpg"
+    preview_path = os.path.join(PREVIEWS_DIR, preview_filename)
+
+    try:
+        src_mtime = os.path.getmtime(src_path)
+        prev_exists = os.path.exists(preview_path)
+        prev_mtime = os.path.getmtime(preview_path) if prev_exists else 0
+    except Exception:
+        src_mtime = time.time()
+        prev_exists = False
+        prev_mtime = 0
+
+    # Regenerate if missing or older than source
+    if (not prev_exists) or (prev_mtime < src_mtime):
+        try:
+            with PILImage.open(src_path) as img:
+                # Convert to RGB for consistent JPEG output
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    if img.mode == 'RGBA':
+                        background = PILImage.new('RGB', img.size, (255, 255, 255))
+                        background.paste(img, mask=img.split()[-1])
+                        img = background
+                    else:
+                        img = img.convert('RGB')
+
+                # Resize preserving aspect ratio
+                img.thumbnail((size, size), PILImage.Resampling.LANCZOS)
+
+                # Ensure directory exists
+                os.makedirs(PREVIEWS_DIR, exist_ok=True)
+                img.save(preview_path, 'JPEG', quality=85, optimize=True)
+        except Exception as e:
+            # As a fallback, try to return the thumbnail if available
+            thumb_path = os.path.join(THUMBNAILS_DIR, f"{image_id}.jpg")
+            if os.path.exists(thumb_path):
+                return FileResponse(thumb_path, media_type='image/jpeg')
+            raise HTTPException(status_code=500, detail=f"Failed to generate preview: {e}")
+
+    return FileResponse(preview_path, media_type='image/jpeg')
 
 @app.get("/image-file/{image_id}")
 async def serve_image_file(image_id: int, download: bool = False, db: Session = Depends(get_db)):
@@ -248,7 +304,7 @@ async def serve_image_file(image_id: int, download: bool = False, db: Session = 
 
 @app.get("/{image_id}.{ext:path}")
 async def serve_image_by_filename(image_id: int, ext: str, db: Session = Depends(get_db)):
-    """Serve image by ID with file extension (for direct filename requests)"""
+    """Serve original image by ID with file extension (for direct filename requests)"""
     print(f"DEBUG: Route called with image_id={image_id}, ext={ext}")
     
     # Validate that image_id is numeric and ext is a valid image extension
@@ -257,14 +313,7 @@ async def serve_image_by_filename(image_id: int, ext: str, db: Session = Depends
         print(f"DEBUG: Invalid extension '{ext}'")
         raise HTTPException(status_code=404, detail="Invalid image format")
     
-    # Check if it's a thumbnail request first
-    thumbnail_path = os.path.join(THUMBNAILS_DIR, f"{image_id}.jpg")
-    print(f"DEBUG: Checking thumbnail path: {thumbnail_path}")
-    if os.path.exists(thumbnail_path):
-        print(f"DEBUG: Found thumbnail, serving: {thumbnail_path}")
-        return FileResponse(thumbnail_path, media_type="image/jpeg")
-    
-    # Otherwise serve original image
+    # Serve original image (not thumbnail)
     print(f"DEBUG: Looking up image with ID {image_id} in database")
     image = db.query(Image).filter(Image.id == image_id).first()
     if not image:
@@ -402,3 +451,21 @@ async def get_media_stats(db: Session = Depends(get_db)):
         "images_without_local_copies": total_images - images_with_copies,
         "media_directory": media_stats
     }
+
+# Startup event to initialize import watcher
+@app.on_event("startup")
+async def startup_event():
+    """Start background services on app startup"""
+    print("Starting import watcher...")
+    import_watcher = get_import_watcher()
+    import_watcher.start()
+    print(f"Import watcher started with status: {import_watcher.status()}")
+
+# Shutdown event to cleanup import watcher
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up background services on app shutdown"""
+    print("Stopping import watcher...")
+    import_watcher = get_import_watcher()
+    import_watcher.stop()
+    print("Import watcher stopped")

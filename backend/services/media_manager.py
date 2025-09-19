@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 from sqlalchemy.orm import Session
 
 from backend.models import Image
+from backend.utils.path_utils import get_container_path
 
 
 class MediaManager:
@@ -31,10 +32,8 @@ class MediaManager:
     def ensure_local_copy(self, original_path: str, filename: str) -> Optional[str]:
         """Ensure a local copy exists, creating it if necessary"""
         # Handle volume mapping for source path
-        source_path = original_path
-        if original_path.startswith('/volume1/Heritage/AI Art'):
-            source_path = original_path.replace('/volume1/Heritage/AI Art', '/library')
-        
+        source_path = get_container_path(original_path) or original_path
+
         if not os.path.exists(source_path):
             print(f"ERROR: Source file not found: {source_path}")
             return None

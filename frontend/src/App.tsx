@@ -8,6 +8,8 @@ import CategoriesPage from './pages/CategoriesPage'
 import JobsPage from './pages/JobsPage'
 import SettingsPage from './pages/SettingsPage'
 import RandomPage from './pages/RandomPage'
+import MemoriesPage from './pages/MemoriesPage'
+import DuplicatesPage from './pages/DuplicatesPage'
 
 function App() {
   return (
@@ -21,6 +23,8 @@ function App() {
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/random" element={<RandomPage />} />
+        <Route path="/memories" element={<MemoriesPage />} />
+        <Route path="/duplicates" element={<DuplicatesPage />} />
       </Routes>
     </Layout>
   )

@@ -4,6 +4,7 @@ sys.path.append('/app')
 sys.path.append('.')
 
 from backend.models import SessionLocal, Image
+from backend.utils.path_utils import get_container_path, get_container_root
 
 session = SessionLocal()
 
@@ -30,11 +31,8 @@ for i, img in enumerate(images[:5]):
         
         # Check if file exists in expected mount location
         if img.path:
-            # Try common mount points
-            possible_paths = [
-                img.path.replace('/volume1/', '/'),  # Check if mounted at root
-                img.path,  # Original path
-            ]
+            mapped = get_container_path(img.path)
+            possible_paths = [p for p in {img.path, mapped} if p]
             
             for test_path in possible_paths:
                 if os.path.exists(test_path):
@@ -58,17 +56,18 @@ except Exception as e:
     print(f"Error listing root: {e}")
 
 print()
-print("Checking /library:")
-if os.path.exists('/library'):
-    print("  /library exists")
+mount_root = get_container_root()
+print(f"Checking {mount_root}:")
+if os.path.exists(mount_root):
+    print(f"  {mount_root} exists")
     try:
-        lib_contents = os.listdir('/library')
+        lib_contents = os.listdir(mount_root)
         print(f"  Contains {len(lib_contents)} items:")
         for item in sorted(lib_contents)[:10]:  # Show first 10
             print(f"    {item}")
     except Exception as e:
-        print(f"  Error listing /library: {e}")
+        print(f"  Error listing {mount_root}: {e}")
 else:
-    print("  /library does not exist")
+    print(f"  {mount_root} does not exist")
 
 session.close()

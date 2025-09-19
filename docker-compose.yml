@@ -29,7 +29,9 @@ services:
     ports:
       - "8102:8000"
     environment:
-      LIBRARY_PATHS: /library
+      LIBRARY_PATHS: ${LIBRARY_CONTAINER_PATH:-/library}
+      LIBRARY_HOST_PATH: ${LIBRARY_HOST_PATH:-}
+      LIBRARY_CONTAINER_PATH: ${LIBRARY_CONTAINER_PATH:-/library}
       DB_URL: postgresql://postgres:PhotoLib2024!@db:5432/photo_library
       PYTHONUNBUFFERED: 1
       TZ: "Etc/UTC"
@@ -44,10 +46,10 @@ services:
       # Set to 'true' to exclude RAW files (ARW, RAF, CR2, etc.) for better performance
       EXCLUDE_RAW_FILES: 'true'
     volumes:
-      - "/volume1/Heritage/Photos:/library:ro"
-      - "/volume1/docker/apps/photo-image-library/data:/data"
+      - "${LIBRARY_HOST_PATH:-/path/to/photo-library}:${LIBRARY_CONTAINER_PATH:-/library}:ro"
+      - "${APP_DATA_PATH:-./data}:/data"
       # Bind host ffmpeg binary into the container for fallback decoding
-      - "/bin/ffmpeg:/usr/local/bin/ffmpeg:ro"
+      - "${HOST_FFMPEG_PATH:-/usr/bin/ffmpeg}:/usr/local/bin/ffmpeg:ro"
     networks:
       - photo-network
     depends_on:

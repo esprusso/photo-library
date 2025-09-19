@@ -8,6 +8,7 @@ import shutil
 
 from backend.models import Image, Job
 import magic
+from backend.utils.path_utils import get_container_path
 
 
 class ThumbnailGenerator:
@@ -250,17 +251,11 @@ class ThumbnailGenerator:
         if os.path.exists(image.path):
             return image.path
         
-        # Check if path needs mapping from host to container
-        if image.path.startswith('/volume1/Heritage/AI Art'):
-            container_path = image.path.replace('/volume1/Heritage/AI Art', '/library')
-            if os.path.exists(container_path):
-                return container_path
-        
-        # Check if path is already using container mount point
-        if image.path.startswith('/library'):
-            if os.path.exists(image.path):
-                return image.path
-        
+        # Attempt host→container mapping via environment configuration
+        mapped = get_container_path(image.path)
+        if mapped and os.path.exists(mapped):
+            return mapped
+
         return None
     
     def cleanup_orphaned_thumbnails(self, db: Session) -> int:

@@ -7,11 +7,10 @@
   "theme_color": "#0f172a",
   "icons": [
     {
-      "src": "/ai-logo.png",
+      "src": "/photo-logo.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
     }
   ]
 }
-

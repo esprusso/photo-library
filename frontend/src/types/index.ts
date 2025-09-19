@@ -7,6 +7,10 @@ export interface Image {
   height?: number
   aspect_ratio?: number
   format?: string
+  // Enriched fields for responsive rendering
+  thumbnail_paths?: Record<string, string>
+  animated_preview_paths?: Record<string, any>
+  is_animated?: boolean
   camera_make?: string
   camera_model?: string
   lens_model?: string
@@ -40,6 +44,9 @@ export interface Category {
   description?: string
   color: string
   featured: boolean  // Always false until database migration
+  featured_image_id?: number | null
+  featured_image_thumbnail_path?: string | null
+  featured_image_position?: string | null
   created_at?: string
   image_count: number
 }
@@ -73,10 +80,15 @@ export interface ImageFilters {
   max_height?: number
   date_from?: string
   date_to?: string
+  // New optional filters
+  file_format?: string
+  media?: 'gif' | 'video' | 'image'
+  exclude_jpg?: boolean
+  exclude_static?: boolean
 }
 
 export interface SortOptions {
-  sort_by: 'created_at' | 'filename' | 'width' | 'height'
+  sort_by: 'created_at' | 'filename' | 'width' | 'height' | 'random'
   sort_order: 'asc' | 'desc'
 }
 

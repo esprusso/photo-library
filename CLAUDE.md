@@ -73,7 +73,7 @@ npm run lint          # ESLint checking
 ## Key Environment Variables
 
 Configure in `.env` file:
-- `LIBRARY_PATHS`: Comma-separated photo directory paths (e.g., `/Volumes/Heritage/Photos`)
+- `LIBRARY_PATHS`: Comma-separated photo directory paths inside the container (e.g., `/library`)
 - `DB_URL`: Database connection (default: PostgreSQL in docker-compose.yml)
 - `THUMBNAILS_DIR`: Thumbnail storage location (default: `/data/thumbnails`)
 - `DOWNLOADS_DIR`: ZIP export location (default: `/data/downloads`)
@@ -109,4 +109,4 @@ Key routes:
 - Photo library mounted read-only to `/library` in container
 - Application data (thumbnails, DB) in `/data` volume
 - Supports Synology Docker package with volume mapping
-- Path translation handles `/Volumes/Heritage/Photos` ↔ `/library` mounting
+- Path translation uses `LIBRARY_HOST_PATH`/`LIBRARY_CONTAINER_PATH` to map host storage into the container

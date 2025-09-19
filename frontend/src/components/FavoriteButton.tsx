@@ -22,9 +22,9 @@ export default function FavoriteButton({
       type="button"
       disabled={readonly}
       onClick={onToggle}
-      className={`${sizeClasses[size]} transition-colors ${
+      className={`${sizeClasses[size]} transition-transform ${
         readonly 
-          ? 'cursor-default' 
+          ? 'cursor-default pointer-events-none' 
           : 'cursor-pointer hover:scale-110'
       } ${
         isFavorite 

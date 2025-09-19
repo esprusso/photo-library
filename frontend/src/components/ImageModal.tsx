@@ -10,17 +10,32 @@ interface ImageModalProps {
   imageId: number | null
   onClose: () => void
   onNavigate?: (direction: 'prev' | 'next') => void
+  onDeleted?: (id: number) => void
 }
 
-export default function ImageModal({ imageId, onClose, onNavigate }: ImageModalProps) {
+export default function ImageModal({ imageId, onClose, onNavigate, onDeleted }: ImageModalProps) {
   const [isClosing, setIsClosing] = useState(false)
+  const [isInfoOpen, setIsInfoOpen] = useState(false)
   const queryClient = useQueryClient()
+
+  // Debug: Log when imageId changes to help diagnose the issue
+  useEffect(() => {
+    if (imageId) {
+      console.log('ImageModal: imageId changed to', imageId)
+    }
+    setIsInfoOpen(false)
+  }, [imageId])
 
   const { data: image, isLoading } = useQuery(
     ['image', imageId],
     () => imageApi.getImage(imageId!),
     {
       enabled: !!imageId,
+      staleTime: 1000 * 60, // Consider data fresh for 1 minute
+      cacheTime: 1000 * 60 * 5, // Keep in cache for 5 minutes
+      onSuccess: (data) => {
+        console.log('ImageModal: Loaded image data for ID', imageId, 'Got image:', data?.filename, 'ID:', data?.id)
+      }
     }
   )
 
@@ -49,30 +64,57 @@ export default function ImageModal({ imageId, onClose, onNavigate }: ImageModalP
   )
 
 
-  // Handle keyboard navigation
+  // Handle keyboard navigation + rating/favorite hotkeys
   useEffect(() => {
+    const isTyping = () => {
+      const el = document.activeElement as HTMLElement | null
+      if (!el) return false
+      const tag = el.tagName
+      const editable = (el as any).isContentEditable
+      return tag === 'INPUT' || tag === 'TEXTAREA' || editable
+    }
+
     const handleKeyboard = (e: KeyboardEvent) => {
+      if (!imageId) return
+      if (!image) return
+      if (isTyping()) return
+
       if (e.key === 'Escape') {
+        e.preventDefault()
         handleClose()
       } else if (e.key === 'ArrowLeft' && onNavigate) {
+        e.preventDefault()
         onNavigate('prev')
       } else if (e.key === 'ArrowRight' && onNavigate) {
+        e.preventDefault()
         onNavigate('next')
+      } else if (['1','2','3','4','5'].includes(e.key)) {
+        // Star rating hotkeys
+        e.preventDefault()
+        const rating = parseInt(e.key, 10)
+        if (rating >= 1 && rating <= 5) {
+          ratingMutation.mutate({ id: image.id, rating })
+        }
+      } else if (e.key === 'f' || e.key === 'F') {
+        // Favorite toggle
+        e.preventDefault()
+        favoriteMutation.mutate(image.id)
       }
     }
 
     if (imageId) {
-      document.addEventListener('keydown', handleKeyboard)
+      window.addEventListener('keydown', handleKeyboard, { capture: true })
       document.body.style.overflow = 'hidden'
     }
 
     return () => {
-      document.removeEventListener('keydown', handleKeyboard)
+      window.removeEventListener('keydown', handleKeyboard as any, { capture: true } as any)
       document.body.style.overflow = 'unset'
     }
-  }, [imageId, onNavigate])
+  }, [imageId, image?.id, onNavigate])
 
   const handleClose = () => {
+    setIsInfoOpen(false)
     setIsClosing(true)
     setTimeout(() => {
       onClose()
@@ -90,71 +132,105 @@ export default function ImageModal({ imageId, onClose, onNavigate }: ImageModalP
   if (!imageId) return null
 
   return (
-    <div className={`fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4 ${
-      isClosing ? 'opacity-0' : 'opacity-100'
-    } transition-opacity duration-200`}>
-      <div className={`bg-white dark:bg-gray-900 rounded-lg max-w-7xl w-full max-h-[90vh] h-[90vh] overflow-hidden flex transform ${
-        isClosing ? 'scale-95' : 'scale-100'
-      } transition-transform duration-200`}>
-        
-        {/* Image Side */}
-        <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-gray-800 p-4 min-w-0 min-h-0">
-          <button
-            onClick={handleClose}
-            className="absolute top-4 right-4 text-white hover:text-gray-300 z-10 bg-black bg-opacity-50 rounded-full p-2"
-            aria-label="Close modal"
-          >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-          
+    <div
+      role="dialog"
+      aria-modal="true"
+      className={`fixed inset-0 bg-black bg-opacity-90 z-50 transition-opacity duration-200 ${
+        isClosing ? 'opacity-0' : 'opacity-100'
+      }`}
+    >
+      <div
+        className={`relative w-full h-full transform transition-transform duration-200 ${
+          isClosing ? 'scale-95' : 'scale-100'
+        }`}
+      >
+        <button
+          onClick={handleClose}
+          className="absolute top-6 right-6 text-white hover:text-gray-300 z-20 bg-black/60 rounded-full p-2"
+          aria-label="Close modal"
+        >
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        <button
+          onClick={() => setIsInfoOpen((open) => !open)}
+          className="absolute top-6 right-20 text-white hover:text-gray-300 z-20 bg-black/60 rounded-full p-2"
+          aria-label={isInfoOpen ? 'Hide image information' : 'Show image information'}
+          aria-pressed={isInfoOpen}
+        >
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+              d="M13 16h-1v-4h-1m1-4h.01M21 12c0 4.97-4.03 9-9 9s-9-4.03-9-9 4.03-9 9-9 9 4.03 9 9z"
+            />
+          </svg>
+        </button>
+
+        <div className="absolute inset-0 flex items-center justify-center">
           {isLoading ? (
             <div className="text-white text-lg">Loading...</div>
           ) : image ? (
-            <div className="w-full h-full flex items-center justify-center overflow-hidden">
-              <img
-                src={`/api/image-file/${image.id}`}
-                alt={image.filename}
-                className="max-w-full max-h-full w-auto h-auto object-contain rounded-lg shadow-2xl"
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  width: 'auto',
-                  height: 'auto'
-                }}
-                onError={(e) => {
-                  const img = e.currentTarget as HTMLImageElement
-                  img.src = image.thumbnail_path
-                }}
-              />
-            </div>
+            <img
+              src={`/api/image-file/${image.id}`}
+              alt={image.filename}
+              className="w-full h-full object-contain"
+              onError={(e) => {
+                const img = e.currentTarget as HTMLImageElement
+                img.src = image.thumbnail_path
+              }}
+            />
           ) : (
             <div className="text-white text-lg">Image not found</div>
           )}
         </div>
 
-        {/* Info Side */}
-        <div className="w-96 bg-white dark:bg-gray-900 p-6 overflow-y-auto">
-          {isLoading ? (
-            <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
-          ) : !image ? (
-            <div className="text-center py-8 text-gray-500 dark:text-gray-400">Image not found</div>
-          ) : (
-            <ImageDetails image={image} favoriteMutation={favoriteMutation} ratingMutation={ratingMutation} />
-          )}
+        {image && (
+          <div className="absolute bottom-6 right-6 flex items-center gap-4 rounded-full bg-black/60 px-4 py-2 backdrop-blur-sm z-20">
+            <StarRating
+              rating={image.rating || 0}
+              onRatingChange={(rating) => ratingMutation.mutate({ id: image.id, rating })}
+              size="lg"
+            />
+            <FavoriteButton
+              isFavorite={image.favorite || false}
+              onToggle={() => favoriteMutation.mutate(image.id)}
+              size="lg"
+            />
+          </div>
+        )}
+
+        <div
+          className={`absolute top-0 right-0 h-full w-full max-w-md bg-white dark:bg-gray-900 shadow-2xl overflow-y-auto transition-transform duration-300 ${
+            isInfoOpen ? 'translate-x-0' : 'translate-x-full'
+          }`}
+          aria-hidden={!isInfoOpen}
+        >
+          <div className="p-6">
+            {isLoading ? (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
+            ) : !image ? (
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">Image not found</div>
+            ) : (
+              <ImageDetails image={image} onClose={handleClose} onDeleted={onDeleted} />
+            )}
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
-function ImageDetails({ image, favoriteMutation, ratingMutation }: { 
+function ImageDetails({ image, onClose, onDeleted }: { 
   image: Image
-  favoriteMutation: any
-  ratingMutation: any
+  onClose?: () => void
+  onDeleted?: (id: number) => void
 }) {
   const queryClient = useQueryClient()
+  const [showExif, setShowExif] = useState(false)
   const [tagInput, setTagInput] = useState('')
 
   const addTagsMutation = useMutation(
@@ -186,7 +262,6 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
   type TagOption = { label: string; value: string }
   const tagOptions: TagOption[] = (allTags || []).map((t: any) => ({ label: t.name, value: t.name }))
   const [selectedTagOptions, setSelectedTagOptions] = useState<TagOption[]>([])
-  const [deleteOriginal, setDeleteOriginal] = useState(false)
 
   const handleApplySelected = () => {
     if (!selectedTagOptions.length) return
@@ -256,14 +331,22 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
   }
 
   const deleteMutation = useMutation(
-    () => imageApi.deleteImage(image.id, deleteOriginal),
+    () => {
+      let blacklist = true
+      try {
+        const v = localStorage.getItem('blacklistOnDelete')
+        blacklist = v == null ? true : v === 'true'
+      } catch {}
+      return imageApi.deleteImage(image.id, false, blacklist)
+    },
     {
       onSuccess: async () => {
         await queryClient.invalidateQueries(['images'])
         await queryClient.invalidateQueries('library-stats')
         // Close modal by simulating onClose via a custom event
-        const evt = new CustomEvent('ai-image-deleted')
+        const evt = new CustomEvent('ai-image-deleted', { detail: { id: image.id } })
         window.dispatchEvent(evt)
+        if (onDeleted) onDeleted(image.id)
       }
     }
   )
@@ -303,6 +386,18 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
               {formatFileSize(image.file_size)}
             </span>
           </div>
+          {image.format && (
+            <div className="flex justify-between">
+              <span className="text-gray-600 dark:text-gray-400">Format</span>
+              <span className="text-gray-900 dark:text-white">{image.format}</span>
+            </div>
+          )}
+          {(image.aspect_ratio && image.aspect_ratio > 0) && (
+            <div className="flex justify-between">
+              <span className="text-gray-600 dark:text-gray-400">Aspect Ratio</span>
+              <span className="text-gray-900 dark:text-white">{image.aspect_ratio.toFixed(2)}:1</span>
+            </div>
+          )}
           {image.created_at && (
             <div className="flex justify-between">
               <span className="text-gray-600 dark:text-gray-400">Created</span>
@@ -311,13 +406,32 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
               </span>
             </div>
           )}
+          {image.date_taken && (
+            <div className="flex justify-between">
+              <span className="text-gray-600 dark:text-gray-400">Date Taken</span>
+              <span className="text-gray-900 dark:text-white">
+                {new Date(image.date_taken).toLocaleString()}
+              </span>
+            </div>
+          )}
         </div>
       </section>
 
-      {/* Camera & Photo Info */}
-      {(image.camera_make || image.camera_model || image.focal_length || image.aperture || image.iso || image.shutter_speed) && (
-        <section>
-          <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Camera Settings</h4>
+      {/* EXIF (always render; show message if none) */}
+      <section>
+        <button
+          onClick={() => setShowExif((v) => !v)}
+          className="w-full flex items-center justify-between text-left mb-2 px-0 py-0"
+          aria-expanded={showExif}
+        >
+          <span className="text-sm font-semibold text-gray-900 dark:text-white">EXIF</span>
+          <svg className={`w-4 h-4 text-gray-600 dark:text-gray-300 transition-transform ${showExif ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.25 8.29a.75.75 0 01-.02-1.08z" clipRule="evenodd"/></svg>
+        </button>
+        {showExif && ((
+          image.camera_make || image.camera_model || image.lens_model ||
+          image.focal_length || image.aperture || image.shutter_speed ||
+          image.iso || (image.flash_used !== undefined && image.flash_used !== null)
+        ) ? (
           <div className="space-y-2 text-sm">
             {(image.camera_make || image.camera_model) && (
               <div>
@@ -360,24 +474,18 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
                   <span className="text-gray-900 dark:text-white">{image.iso}</span>
                 </div>
               )}
-              {image.flash_used !== undefined && (
+              {image.flash_used !== undefined && image.flash_used !== null && (
                 <div>
                   <span className="text-gray-600 dark:text-gray-400 block">Flash:</span>
                   <span className="text-gray-900 dark:text-white">{image.flash_used ? 'Yes' : 'No'}</span>
                 </div>
               )}
-              {image.date_taken && (
-                <div>
-                  <span className="text-gray-600 dark:text-gray-400 block">Date Taken:</span>
-                  <span className="text-gray-900 dark:text-white text-xs">
-                    {new Date(image.date_taken).toLocaleDateString()}
-                  </span>
-                </div>
-              )}
             </div>
           </div>
-        </section>
-      )}
+        ) : (
+          <div className="text-xs text-gray-500 dark:text-gray-400">No EXIF metadata available.</div>
+        ))}
+      </section>
 
       {/* Tags & Categories */}
       {(image.tags?.length > 0 || image.categories?.length > 0) && (
@@ -422,20 +530,6 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
       <section>
         <h4 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Actions</h4>
         <div className="space-y-3">
-          <div className="flex items-center space-x-2">
-            <span className="text-sm text-gray-600 dark:text-gray-400">Rating:</span>
-            <StarRating
-              rating={image.rating || 0}
-              onRatingChange={(rating) => ratingMutation.mutate({ id: image.id, rating })}
-            />
-          </div>
-          <div className="flex items-center space-x-2">
-            <span className="text-sm text-gray-600 dark:text-gray-400">Favorite:</span>
-            <FavoriteButton
-              isFavorite={image.favorite || false}
-              onToggle={() => favoriteMutation.mutate(image.id)}
-            />
-          </div>
           <button
             onClick={handleDownload}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md text-sm font-medium transition-colors"
@@ -443,27 +537,22 @@ function ImageDetails({ image, favoriteMutation, ratingMutation }: {
             Download Original
           </button>
 
-          {/* Delete */}
+          {/* Delete (originals are never deleted) */}
           <div className="p-2 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
-            <label className="flex items-center space-x-2 text-xs text-red-700 dark:text-red-300 mb-2">
-              <input
-                type="checkbox"
-                checked={deleteOriginal}
-                onChange={(e) => setDeleteOriginal(e.target.checked)}
-                className="w-4 h-4"
-              />
-              <span>Also delete original file</span>
-            </label>
             <button
+              type="button"
               onClick={() => {
-                if (confirm(deleteOriginal ? 'Delete from library AND remove original file?' : 'Delete from library?')) {
-                  deleteMutation.mutate()
-                }
+                // Immediate soft-delete: notify list, close modal, allow undo
+                const evt = new CustomEvent('ai-image-soft-delete', { detail: { id: image.id, image } })
+                window.dispatchEvent(evt)
+                if (onDeleted) onDeleted(image.id)
+                // Close immediately without waiting for animation
+                onClose?.()
               }}
               disabled={deleteMutation.isLoading}
               className="w-full bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md text-sm font-medium transition-colors disabled:opacity-50"
             >
-              {deleteMutation.isLoading ? 'Deleting…' : (deleteOriginal ? 'Delete (incl. original)' : 'Delete from Library')}
+              {deleteMutation.isLoading ? 'Deleting…' : 'Delete from Library'}
             </button>
           </div>
           

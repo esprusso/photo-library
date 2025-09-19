@@ -7,11 +7,29 @@ export default function JobsPage() {
   const qc = useQueryClient()
   const [actionResult, setActionResult] = useState<string>('')
   const jobs = useQuery(['jobs'], () => jobApi.getJobs(), { refetchInterval: 5000 })
+  const thumbStatus = useQuery(['thumb-status'], () => jobApi.getThumbnailStatus(), { refetchInterval: 10000 })
   const startIndexing = useMutation(jobApi.startIndexing, { onSuccess: () => qc.invalidateQueries('jobs') })
-  const startThumbs = useMutation(() => jobApi.startThumbnails(false), { onSuccess: () => qc.invalidateQueries('jobs') })
+  const startThumbs = useMutation((size: number) => jobApi.startThumbnails(false, size), { onSuccess: (d) => { qc.invalidateQueries('jobs'); setActionResult(d.message) } })
+  const forceThumbs = useMutation((size: number) => jobApi.startThumbnails(true, size), { onSuccess: (d) => { qc.invalidateQueries('jobs'); setActionResult(d.message) } })
+  const purgeThumbs = useMutation(jobApi.purgeThumbnails, { onSuccess: (d) => { qc.invalidateQueries('jobs'); setActionResult(d.message) } })
+  const startRefreshExif = useMutation(() => jobApi.startRefreshExif(false), { onSuccess: () => qc.invalidateQueries('jobs') })
   
   const forceKillMutation = useMutation(
     jobApi.forceKillStalled,
+    {
+      onSuccess: (data) => {
+        setActionResult(data.message)
+        qc.invalidateQueries('jobs')
+      },
+      onError: (error: any) => {
+        const errorMessage = error?.response?.data?.detail || error?.message || 'Unknown error'
+        setActionResult(`Error: ${errorMessage}`)
+      }
+    }
+  )
+
+  const forceKillJobMutation = useMutation(
+    (jobId: number) => jobApi.forceKillJob(jobId),
     {
       onSuccess: (data) => {
         setActionResult(data.message)
@@ -49,33 +67,87 @@ export default function JobsPage() {
       </div>
 
       {/* Action Buttons */}
-      <div className="flex flex-wrap gap-2">
-        <button
-          onClick={() => startIndexing.mutate()}
-          className="px-3 py-2 rounded-md bg-blue-600 text-white text-sm disabled:opacity-60 hover:bg-blue-700"
-          disabled={startIndexing.isLoading}
-        >
-          {startIndexing.isLoading ? 'Starting...' : 'Start Indexing'}
-        </button>
-        <button
-          onClick={() => startThumbs.mutate()}
-          className="px-3 py-2 rounded-md bg-green-600 text-white text-sm disabled:opacity-60 hover:bg-green-700"
-          disabled={startThumbs.isLoading}
-        >
-          {startThumbs.isLoading ? 'Starting...' : 'Generate Thumbnails'}
-        </button>
-        <button
-          onClick={() => {
-            if (confirm('Force-kill all stalled jobs (running for >5 minutes with no progress)? This cannot be undone.')) {
-              setActionResult('Force-killing stalled jobs...')
-              forceKillMutation.mutate()
-            }
-          }}
-          className="px-3 py-2 rounded-md bg-red-600 text-white text-sm disabled:opacity-60 hover:bg-red-700"
-          disabled={forceKillMutation.isLoading}
-        >
-          {forceKillMutation.isLoading ? 'Killing...' : '💀 Force Kill Stalled'}
-        </button>
+      <div className="flex flex-wrap gap-4 items-start">
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => startIndexing.mutate()}
+            className="px-3 py-2 rounded-md bg-blue-600 text-white text-sm disabled:opacity-60 hover:bg-blue-700"
+            disabled={startIndexing.isLoading}
+          >
+            {startIndexing.isLoading ? 'Starting...' : 'Start Indexing'}
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => {
+              if (confirm('Force-kill stalled jobs that appear unresponsive?')) {
+                forceKillMutation.mutate()
+              }
+            }}
+            className="px-3 py-2 rounded-md bg-orange-600 text-white text-sm disabled:opacity-60 hover:bg-orange-700"
+            disabled={forceKillMutation.isLoading}
+            title="Mark stalled running jobs as failed"
+          >
+            {forceKillMutation.isLoading ? 'Killing…' : 'Force-Kill Stalled Jobs'}
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => startThumbs.mutate(1024)}
+            className="px-3 py-2 rounded-md bg-green-600 text-white text-sm disabled:opacity-60 hover:bg-green-700"
+            disabled={startThumbs.isLoading}
+            title="Create thumbnails that don't exist yet (1024px)"
+          >
+            {startThumbs.isLoading ? 'Starting…' : 'Generate Missing'}
+          </button>
+          <span className="text-xs text-gray-600 dark:text-gray-400">Creates only missing thumbnails</span>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => forceThumbs.mutate(1024)}
+            className="px-3 py-2 rounded-md bg-emerald-600 text-white text-sm disabled:opacity-60 hover:bg-emerald-700"
+            disabled={forceThumbs.isLoading || (!!thumbStatus.data && thumbStatus.data.thumbnails === 0)}
+            title="Recreate all thumbnails at 1024px (overwrites existing)"
+          >
+            {forceThumbs.isLoading ? 'Starting…' : 'Rebuild All'}
+          </button>
+          <span className="text-xs text-gray-600 dark:text-gray-400">Overwrites existing thumbnails</span>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => {
+              if (confirm('Purge all existing thumbnails? They will be regenerated when needed.')) {
+                purgeThumbs.mutate()
+              }
+            }}
+            className="px-3 py-2 rounded-md bg-red-600 text-white text-sm disabled:opacity-60 hover:bg-red-700"
+            disabled={purgeThumbs.isLoading}
+            title="Delete all generated thumbnails"
+          >
+            {purgeThumbs.isLoading ? 'Purging…' : 'Purge Thumbnails'}
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => startRefreshExif.mutate()}
+            className="px-3 py-2 rounded-md bg-purple-600 text-white text-sm disabled:opacity-60 hover:bg-purple-700"
+            disabled={startRefreshExif.isLoading}
+            title="Re-extract EXIF and file info for all images"
+          >
+            {startRefreshExif.isLoading ? 'Starting…' : 'Refresh EXIF/Metadata'}
+          </button>
+        </div>
+
+        {thumbStatus.data && (
+          <div className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+            Thumbnails: {thumbStatus.data.thumbnails} / {thumbStatus.data.total_images} (missing {thumbStatus.data.missing})
+          </div>
+        )}
       </div>
 
       {/* Results Display */}
@@ -134,6 +206,20 @@ export default function JobsPage() {
                     className="px-2 py-1 text-xs text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
                   >
                     Cancel
+                  </button>
+                )}
+                {j.status === 'running' && (
+                  <button
+                    onClick={() => {
+                      if (confirm(`Force-kill running ${j.type} job #${j.id}?`)) {
+                        forceKillJobMutation.mutate(j.id)
+                      }
+                    }}
+                    disabled={forceKillJobMutation.isLoading}
+                    className="px-2 py-1 text-xs text-orange-600 hover:text-orange-800 dark:text-orange-400 dark:hover:text-orange-300 hover:bg-orange-50 dark:hover:bg-orange-900/20 rounded transition-colors"
+                    title="Mark this running job as failed"
+                  >
+                    Force Kill
                   </button>
                 )}
                 {(j.status === 'running' || j.status === 'failed') && (

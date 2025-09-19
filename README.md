@@ -116,7 +116,7 @@ Environment variables (via `.env` or compose `environment`):
 - Optional: `SECRET_KEY`, `ALLOWED_HOSTS` for deployments where you add auth/proxy layers.
 
 Notes:
-- The backend contains a convenience path mapper from a Synology‑style path (`/volume1/Heritage/AI Art`) to `/library`. Update volume mounts and/or adjust code if your NAS uses different roots.
+- The backend maps host paths defined in `LIBRARY_HOST_PATH` to the container mount `LIBRARY_CONTAINER_PATH` (defaults to `/library`). Adjust your environment variables to reflect your storage layout.
 - When using SQLite (`DB_URL` starts with `sqlite:`), the backend ensures the DB path exists under the container.
 
 ## API Overview
@@ -177,7 +177,7 @@ Open `http://localhost:5173` (default Vite dev server) and point the frontend AP
 
 - Mount your library read‑only into the backend as `/library` (or set your own `LIBRARY_PATHS`).
 - Ensure the backend user can read the library and write to the configured `THUMBNAILS_DIR`, `DOWNLOADS_DIR`, and `MEDIA_DIR`.
-- The app prefers serving from `local_path` (copied under `MEDIA_DIR`) for reliability; falls back to original path and simple path mapping (`/volume1/…` → `/library`).
+- The app prefers serving from `local_path` (copied under `MEDIA_DIR`) for reliability; falls back to the original path and, if needed, maps `LIBRARY_HOST_PATH` to `LIBRARY_CONTAINER_PATH`.
 - `pillow-heif` enables HEIC/HEIF support; install it or include in your image if your library contains HEIF files.
 - To enable ffmpeg fallback decoding for problematic files, bind `ffmpeg` into the backend and set `ENABLE_FFMPEG_FALLBACK=true`.
 

@@ -149,6 +149,8 @@ function getPageTitle(pathname: string): string {
   switch (pathname) {
     case '/browse':
       return 'Browse Photos'
+    case '/memories':
+      return 'Memories'
     case '/random':
       return 'Random'
     case '/tags':

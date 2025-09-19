@@ -46,6 +46,8 @@ class Image(Base):
     # Organization
     favorite = Column(Boolean, default=False, index=True)
     rating = Column(Integer, default=0, index=True)  # 0 = unrated, 1-5 stars
+    # Perceptual hash (hex); optional, for duplicate detection
+    phash = Column(String, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, server_default=func.now())
