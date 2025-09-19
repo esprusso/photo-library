@@ -665,12 +665,43 @@ export default function BrowsePage() {
       await imageApi.rateImage(imageId, rating),
     {
       onSuccess: (_, { imageId, rating }) => {
-        // Optimistically update the image in our state
-        setImages(prevImages => 
-          prevImages.map(img => 
+        const ratingParam = searchParams.get('rating')
+        const parsedFilter = ratingParam != null ? Number(ratingParam) : null
+        const hasRatingFilter = ratingParam != null && !Number.isNaN(parsedFilter)
+
+        let nextSelectedId: number | null | undefined
+        let removedFromList = false
+
+        // Optimistically update the image in our state and drop it if it no longer matches filter
+        setImages((prevImages) => {
+          const currentIndex = prevImages.findIndex((img) => img.id === imageId)
+          if (currentIndex === -1) return prevImages
+
+          const updated = prevImages.map((img) =>
             img.id === imageId ? { ...img, rating } : img
           )
-        )
+
+          if (hasRatingFilter && parsedFilter !== rating) {
+            const newList = [...updated.slice(0, currentIndex), ...updated.slice(currentIndex + 1)]
+            removedFromList = true
+            if (selectedImageId === imageId) {
+              nextSelectedId = newList[currentIndex]?.id ?? newList[currentIndex - 1]?.id ?? null
+            }
+            return newList
+          }
+
+          return updated
+        })
+
+        if (removedFromList) {
+          setViewHistory((prev) => prev.filter((id) => id !== imageId))
+          if (typeof nextSelectedId !== 'undefined') {
+            setSelectedImageId(nextSelectedId)
+          } else if (selectedImageId === imageId) {
+            setSelectedImageId(null)
+          }
+        }
+
         queryClient.invalidateQueries(['images'])
       }
     }

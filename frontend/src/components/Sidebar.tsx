@@ -221,6 +221,23 @@ function RatingFilterLinks({ className = '', onNavigate }: { className?: string;
             </Link>
           ))}
           <Link
+            to="/browse?rating=0"
+            onClick={handleClick}
+            className="flex items-center space-x-2 text-xs text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors py-1"
+          >
+            <div className="flex items-center justify-center w-3 h-3 text-gray-400">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 20 20">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.5}
+                  d="M9.049 2.927l1.902 0 1.07 3.292 3.462-.001c.968 0 1.37 1.24.587 1.81l-2.8 2.034 1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292-2.8-2.034c-.783-.57-.38-1.81.588-1.81l3.461.001 1.07-3.292z"
+                />
+              </svg>
+            </div>
+            <span>Unrated</span>
+          </Link>
+          <Link
             to="/browse?favorite=true"
             onClick={handleClick}
             className="flex items-center space-x-2 text-xs text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors py-1"
